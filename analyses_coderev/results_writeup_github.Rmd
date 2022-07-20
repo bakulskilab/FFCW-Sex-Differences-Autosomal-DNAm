@@ -1,0 +1,2532 @@
+---
+title: "results_writeup_git"
+output: html_document
+---
+
+---
+title: "results_writeup"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      dev="png",
+                      dpi=300)
+
+```
+
+Load libraries
+```{r load-libs}
+library(cowplot)
+library(gridExtra)
+library(ggrepel)
+library(RColorBrewer)
+library(grid)
+library(ewastools)
+library(flextable)
+library(ggExtra)
+library(ggfortify)
+library(ggpubr)
+library(gtable)
+library(grid)
+library(gt)
+library(gtsummary)
+library(grid)
+library(gridExtra)
+library(gtable)
+library(here)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+library(limma)
+library(lme4)
+library(lmtest)
+library(missMethyl)
+library(png)
+library(readr)
+library(reshape2)
+library(sandwich)
+library(tidyverse)
+library("VennDiagram")
+```
+
+Load in final analytic sample or create it here
+```{r set-dir}
+codedir<-paste0(here::here(),'/analyses')
+datadir<-paste0(here::here(),'/data')
+outputdir<-paste0(here::here(),'/output')
+imagesdir <- paste0(here::here(),'/images')
+limmaoutputdir<-paste0(here::here(),'/output/SigProbes')
+setwd(datadir)
+```
+
+Load data
+```{r load-analytic-sample}
+#setwd(datadir)
+#age 9 data made in: RepeatIncExc_9.R
+#can change this input if need to alter sample size
+analysisdat <- readRDS("/home/alreiner/Projects/ffcw/data/age9final_816.rds")
+
+#age 9 global DNAm data
+#globby9 <- read_csv("/home/alreiner/Projects/ffcw/data/globalDNAm816.csv")
+
+#age 15 data
+analysisdat15 <- readRDS("/home/alreiner/Projects/ffcw/data/age15final_796.rds")
+
+#keppy only age 9 kids with age 15 methylation data also
+analysisdat <- analysisdat %>% filter(id %in% c(analysisdat15$idnum))
+
+#pheno data
+pdqc <- read_csv("/nfs/turbo/bakulski1/People/alreiner/analytic/pd_analytic_freeze1.csv") #1684
+
+#full pheno data
+fullphen <- readRDS("/nfs/turbo/bakulski1/People/alreiner/data/fullpheno.rds")
+
+#Add additional variables of interest to age 15 data
+#childs age in months: ck6yagem (youth age at time of home visit)
+analysisdat15 <- left_join(analysisdat15, pdqc %>% select(c("MethID","ck6yagem","cp6povco")), by="MethID")
+
+#merge global DNAm values for age 15
+globby <- read_csv("/home/alreiner/Projects/ffcw/data/globalDNAm796_15.csv") #source: RepeatGlobalDNAm.R
+
+#og beta matrix
+#beta <- readRDS("/nfs/turbo/bakulski1/People/alreiner/analytic/beta_analytic_freeze1.rds")
+
+# # #remove cross reactive probes from beta matrix
+# crossy <- load("/nfs/turbo/bakulski1/cross.probes.info.450k.rda") #29233
+# crossylist <- as.character(cross.probes.info$TargetID)
+# 
+# # #count num of these probes that are actually in the beta matrix
+# # sum(crossylist %in% rownames(beta)) #27141 probes are in the beta
+# beta <- beta[!(rownames(beta) %in% crossylist),] #expected count= 410447
+# 
+# # # #betas without gap or sex formed in: beta_formation.R
+# # # #beta age 9, no gaps, no XY (n=796)
+# betanogapnoXY_9 <- readRDS("/home/alreiner/Projects/ffcw/data/age9beta_nogapnoXY_796.rds")
+# betanogapnoXY_9 <- betanogapnoXY_9[,match(analysisdat$MethID,colnames(betanogapnoXY_9))]
+# # #
+# # # # #beta age 15, no gaps, no XY (n=796)
+#  betanogapnoXY_15 <- readRDS("/home/alreiner/Projects/ffcw/data/beta_nogapnoXY_15_796.rds")
+#  betanogapnoXY_15 <- betanogapnoXY_15[,match(analysisdat15$MethID,colnames(betanogapnoXY_15))]
+```
+
+Checking how many age 9 kids contributed saliva samples (Methods)
+```{r methods-check}
+#check how many kids provided saliva samples at age 9
+#ck5saliva = focal child contributed saliva sample at year 9 home visit? Y/N
+table(fullphen$ck5saliva)
+1990+24+2884
+# 2884 contributed saliva samples (1)
+# 24 did not contribute saliva samples (0)
+# 1990 not in wave (-9)
+
+#how many kids had age 9 data
+all9 <- pdqc %>% filter(childteen=="C")
+sum(!duplicated(all9$idnum)) #856
+
+#how many kids had age 15 data
+all15 <- pdqc %>% filter(childteen=="T")
+sum(!duplicated(all15$idnum)) #856
+
+#count overlap of children here
+length(intersect(which(!duplicated(all9$idnum)),which(!duplicated(all15$idnum))))
+#828
+length(intersect(which(!duplicated(all15$idnum)),which(!duplicated(all9$idnum))))
+
+#number of age9 ids that are also in the age 15 ids
+sum(all9$idnum %in% all15$idnum)
+
+#Check how many kids below poverty status
+sum(analysisdat$cm1inpov < 1)
+278/796
+
+#check city distrib
+order(prop.table(table(analysisdat$m1city)),decreasing = T)
+prop.table(table(analysisdat$m1city))
+
+```
+
+Probe QC Check
+```{r probe-qc-check}
+#load in det_p matrix for full beta matrix
+load("/nfs/turbo/bakulski1/People/johndou/Fragile_Families/Preprocess/probe-fail-pct.rds")
+#load in cross reactive probes
+load("/nfs/turbo/bakulski1/cross.probes.info.450k.rda")
+
+#find number of probes with >0.05 det p value
+per.probe[1:10] #2 probes have detp > 0.05
+sum(per.probe[1:10] > 0.05) # 2
+sum(per.probe > 0.05) #34,333 probes fail det_p
+badprobes <- names(which(per.probe > 0.05))
+
+#get the union of probes
+length(union(cross.probes.info$TargetID,badprobes))
+```
+
+Inc-exc table
+```{r inc-exc-table}
+#incexcvars9 <- c("cm1inpov","hv5_agem","hv5_cbmi","hv5_mbmi","m1city", #"cm1bsex","cm1ethrace","cf1ethrace","cm1edu","cf1edu","m1g1","m1g4")
+
+incexcvars9 <- c("cm1bsex","hv5_agem","hv5_cbmi","cm1inpov","hv5_mbmi","cm1ethrace","cm1edu","m1g1_comb","m1g4_comb","m1city","cf1ethrace")
+
+#Get SAND indicator variable
+SANDind <- read.csv("/nfs/turbo/bakulski1/People/alreiner/insand.csv")
+SANDidnums <- c(SANDind$idnum)
+
+#full FFCW sample of 9yo with methylation data
+fullphen %>% select(contains("conf")) #k5conf2 = 1498 not in wave 5
+sum(fullphen$k5conf2 !=-9) #3400 full FFCW sample
+
+#combine categories for mother's overall health and smoking habits
+fullphen3400 <- fullphen %>% mutate(m1g1_comb = ifelse(m1g1==4|m1g1==5,4,m1g1),
+                                      m1g4_comb=ifelse(m1g4==1|m1g4==2,"1+ packs per day",m1g4))
+
+#filter to full FFCW sample (n=3400)
+fullphen3400 <- fullphen3400 %>% filter(k5conf2 !=-9) %>%
+  dplyr::select(incexcvars9, "id")
+
+#update inc-exc chart
+fullphen3400_all <- fullphen %>% filter(k5conf2 !=-9) #%>% select(id,ck5saliva,k5conf2)
+table(fullphen3400_all$ck5saliva) #2881 = 1, 24=0, 495 = missing
+fullp <- fullphen3400_all %>% filter(ck5saliva == 1, id %in% all9$idnum) #828 with methyl age 9
+
+sum(fullp$id %in% all15$idnum) #808 with age 15 methylation data
+
+fullsend <- fullp %>% filter(id %in% all15$idnum)
+
+#check if nonnormal distribs for any continuous vars
+hist(fullphen3400$cm1inpov) #highly skewed-report median
+hist(fullphen3400$hv5_agem) #highly skewed-report median
+hist(fullphen3400$hv5_cbmi) #not super skewed but fine to report median
+hist(fullphen$hv5_mbmi)
+
+#get list of id's from age 9 data
+age9ids <- c(as.character(analysisdat$id))
+
+# new variable of whether in analytic sample or not
+fullphen3400 <- fullphen3400 %>%
+  mutate(incexc = ifelse(id %in% age9ids, "Inc","Exc"))
+#check that counts are as expected
+table(fullphen3400$incexc) #796 included
+
+fullphen3400 %>% dplyr::count(incexc,cm1bsex)
+
+#Age 9 add city indicator
+fullphen3400 <- fullphen3400 %>%
+  mutate(SAND=ifelse(id %in% SANDidnums, "Yes","No"))
+
+#remove the neg values
+#make function
+reppos <- function(x){
+  col<-ifelse(x<0,NA,x)
+  return(col)
+}
+fullphen3400 <- fullphen3400 %>% mutate_all(reppos)
+table(fullphen3400$cf1ethrace)
+fullphen3400 %>% dplyr::count(incexc,cf1ethrace)
+
+#new set of incexc variables
+incexcvars9 <- c("cm1bsex","hv5_agem","hv5_cbmi","cm1inpov","hv5_mbmi","cm1ethrace","cm1edu","m1g1_comb","m1g4_comb","m1city","SAND","cf1ethrace")
+
+
+tab2 = tbl_summary(data=fullphen3400 %>% dplyr::select(c(incexcvars9,incexc,SAND)),
+                   by=incexc,
+                   missing="always",
+                  label = list(cm1bsex ~ "Sex",
+                                  SAND~"Birth City",
+                                  cm1ethrace ~ "Mother's Race",
+                                  cf1ethrace~"Father's Race", 
+                                  cm1inpov ~ "Poverty Index Baseline", 
+                                  hv5_agem ~ "Child's Age in Months", 
+                                  cm1edu ~ "Mother's Education Level",
+                                  #cf1edu~"Father's Education Level", 
+                                  hv5_cbmi ~"Child's BMI age 9", 
+                                  hv5_mbmi ~ "Mother's BMI",
+                                  m1g1_comb ~ "Mother's Overall Health",
+                                  m1g4_comb ~ "Mother's Smoking Habits Baseline"),
+                                  #m~"Global Methylation",),
+                     statistic=list(c(cm1inpov,hv5_agem,hv5_cbmi,hv5_mbmi)~"{median} ({p25},{p75})",#all_continuous()~"{mean} ({sd})",
+                                all_categorical()~"{n} ({p}%)"))%>%
+                                add_p()%>%
+                                bold_p(t = 0.05)
+tab2
+
+tab2 %>%
+  as_flex_table() %>%
+  save_as_docx(path = here("overallstats.docx")) #Export the table to Word using flextable package
+
+sum(is.na(fullphen3400$hv5_mbmi))
+
+#test
+testeroo <- left_join(fullphen3400 %>% select(c(id,incexcvars9,incexc,SAND)), pdqc %>% select(idnum,cm1bsex)%>% mutate(idnum=as.character(idnum)), by=c("id"="idnum"))
+
+sum(is.na(testeroo$cm1bsex.y))
+sum(is.na(testeroo$cm1bsex.x))
+
+table(testeroo$incexc,testeroo$cm1bsex.x)
+
+analysisdat %>% group_by(cm1bsex)%>%summarise(na=n())
+soo <- pdqc %>% dplyr::filter(idnum %in% analysisdat$id, childteen=="C")%>% group_by(cm1bsex)%>%summarise(na=n())
+
+
+################Same by sex table but with analysis dat info
+
+#merge the new cm1bsex vari
+fullphen3400_newsex <- fullphen3400 %>% dplyr::select(c(incexcvars9,incexc,SAND,cm1bsex,id))%>%
+  dplyr::filter(id %in% analysisdat$id)
+foot <- fullphen3400_newsex %>%
+ merge(pdqc %>% select(idnum,cm1bsex,childteen)%>%mutate(id=as.character(idnum)),by="id",all.x=T)
+
+#see if the cm1bsex values match up
+
+foot[which(foot$cm1bsex.x!=foot$cm1bsex.y),] #16 of the old sex values changed in the updated version
+
+
+incexcvars9_up <- c("cm1bsex.y","hv5_agem","hv5_cbmi","cm1inpov","hv5_mbmi","cm1ethrace","cm1edu","m1g1_comb","m1g4_comb","m1city","SAND","cf1ethrace")
+
+ab2 = tbl_summary(data=foot %>% dplyr::select(c(incexcvars9_up,incexc,SAND,id,childteen))%>%dplyr::filter(id %in% analysisdat$id, childteen=="C"),
+                   by=cm1bsex.y,
+                   missing="always",
+                  label = list(#cm1bsex ~ "Sex",
+                                  SAND~"Birth City",
+                                  cm1ethrace ~ "Mother's Race",
+                                  cf1ethrace~"Father's Race", 
+                                  cm1inpov ~ "Poverty Index Baseline", 
+                                  hv5_agem ~ "Child's Age in Months", 
+                                  cm1edu ~ "Mother's Education Level",
+                                  #cf1edu~"Father's Education Level", 
+                                  hv5_cbmi ~"Child's BMI age 9", 
+                                  hv5_mbmi ~ "Mother's BMI",
+                                  m1g1_comb ~ "Mother's Overall Health",
+                                  m1g4_comb ~ "Mother's Smoking Habits Baseline"),
+                                  #m~"Global Methylation",),
+                     statistic=list(c(cm1inpov,hv5_agem,hv5_cbmi,hv5_mbmi)~"{median} ({p25},{p75})",#all_continuous()~"{mean} ({sd})",
+                                all_categorical()~"{n} ({p}%)"))%>%
+                                add_p()%>%
+                                bold_p(t = 0.05)
+ab2
+
+#chisq test for updated sex
+incy <- matrix(c(403,393,1378,1226),nrow=2,ncol=2,byrow=F)
+chisq.test(incy)
+
+
+########Full FFCW sample
+tabfull = tbl_summary(data=fullphen3400 %>% select(c(incexcvars9,incexc,SAND)),
+                   missing="always",
+                  label = list(#cm1bsex ~ "Sex",
+                                  cm1ethrace ~ "Mother's Race",
+                                  cf1ethrace~"Father's Race", 
+                                  cm1inpov ~ "Poverty Index Baseline", 
+                                  hv5_agem ~ "Child's Age in Months", 
+                                  cm1edu ~ "Mother's Education Level",
+                                  #cf1edu~"Father's Education Level", 
+                                  hv5_cbmi ~"Child's BMI age 9", 
+                                  hv5_mbmi ~ "Mother's BMI",
+                                  m1g1_comb ~ "Mother's Overall Health",
+                                  m1g4_comb ~ "Mother's Smoking Habits Baseline"),
+                                  #m~"Global Methylation",),
+                     statistic=list(c(cm1inpov,hv5_agem,hv5_cbmi,hv5_mbmi)~"{median} ({p25},{p75})",#all_continuous()~"{mean} ({sd})",
+                                all_categorical()~"{n} ({p}%)"))
+tabfull
+
+tabfull %>%
+  as_flex_table() %>%
+  save_as_docx(path = here("overallstats3400.docx")) #Export the table to Word using flextable package
+
+```
+
+Plain Table 1
+```{r table1-plain}
+#combine categories for mother's overall health and smoking habits
+analysisdat <- analysisdat %>% mutate(m1g1_comb = ifelse(m1g1==4|m1g1==5,4,m1g1),
+                                      m1g4_comb=ifelse(m1g4==1|m1g4==2,"1+ packs per day",m1g4))
+
+table(analysisdat$m1g1)
+table(analysisdat$m1g1_comb)
+table(analysisdat$m1g4_comb)
+table(analysisdat$m1g4)
+
+#factor the categorical variables (do this more efficicently)
+catvars <- c("m1city", "cm1bsex","cm1ethrace","cf1ethrace","cm1edu",
+        "cf1edu","m1g1_comb","m1g4_comb")
+
+allvars9 <- c("hv5_agem","hv5_cbmi","cm1inpov","hv5_mbmi","cm1ethrace","cm1edu","m1g1_comb","m1g4_comb","m1city","cf1ethrace","Epithelial.cells","Leukocytes","cm1bsex")
+#c("cm1inpov","hv5_agem","Epithelial.cells","Leukocytes","hv5_cbmi","hv5_mbmi", #"cm1bsex","cm1ethrace","cf1ethrace","cm1edu","cf1edu","m1g1","m1g4")
+
+
+#change all categorical variables to a factor variable
+analysisdat[,catvars] = lapply(analysisdat[,catvars], as.factor)
+
+#change factor labels for pretty table
+levels(analysisdat$cm1bsex) <- c("Male","Female")
+levels(analysisdat$cm1ethrace)= c("White Non-Hispanic","Black, Non-Hispanic","Hispanic","Other")
+levels(analysisdat$cf1ethrace)= c("White Non-Hispanic","Black, Non-Hispanic","Hispanic","Other")
+levels(analysisdat$cm1edu)<- c("Less than HS","HS or equivalent","Some College,tech","College or grad")
+levels(analysisdat$cf1edu)<- c("Less than HS","HS or equivalent","Some College, tech","College or grad")
+levels(analysisdat$m1g1) <- c("Great","Very Good","Good","Fair","Poor")
+levels(analysisdat$m1g1_comb) <- c("Great","Very Good","Good","Fair/Poor")
+levels(analysisdat$m1g4) <- c("2+ packs per day","1-2 packs per day ","Less than 1 pack per day","None")
+levels(analysisdat$m1g4_comb) <- c("1+ packs per day","Less than 1 pack per day","None")
+
+#check distribution of numeric vars
+hist(analysisdat$cm1inpov) #skewed
+hist(analysisdat$hv5_agem) #skewed
+hist(analysisdat$hv5_cbmi) #not super skewed
+
+tab1 = tbl_summary(data=analysisdat%>%dplyr::select(allvars9),
+                     missing="ifany",
+                     label = list(cm1bsex ~ "Sex",
+                                  cm1ethrace ~ "Mother's Race",
+                                  cf1ethrace~"Father's Race", 
+                                  cm1inpov ~ "Poverty Index Baseline", 
+                                  hv5_agem ~ "Child's Age in Months", 
+                                  cm1edu ~ "Mother's Education Level",
+                                  #cf1edu~"Father's Education Level", 
+                                  hv5_cbmi ~"Child's BMI age 9", 
+                                  hv5_mbmi ~ "Mother's BMI",
+                                  m1g1_comb ~ "Mother's Overall Health",
+                                  m1g4_comb ~ "Mother's Smoking Habits Baseline",
+                                  #m~"Global Methylation",
+                                  m1city ~"Birth City",
+                                  Epithelial.cells~"Percent Epithelial Cells",
+                                  Leukocytes~"Percent Immune Cells"),
+                     #type = list(hv5_ppvtss~'continuous'),
+                     statistic=list(c(cm1inpov,hv5_agem,Epithelial.cells,Leukocytes,hv5_cbmi,hv5_mbmi)~"{median} ({p25},{p75})",#all_continuous()~"{mean} ({sd})",
+                                all_categorical()~"{n} ({p}%)"))
+
+
+tab1
+tab1 %>%
+  as_flex_table() %>%
+  save_as_docx(path = here("summary_stats_table.docx")) #Export the table to Word using flextable package
+```
+
+Check father race analysisdat
+Seems to be missing father race data even though we have this data in the greater data set (fullphen)
+```{r}
+raceo <- analysisdat %>% filter(is.na(cf1ethrace))
+
+fullphen3400_t <- fullphen3400 %>% filter(id %in% raceo$id)
+
+pqdcRACE <- pdqc %>% filter(idnum %in% raceo$id)
+
+table(pqdcRACE$ck6ethrace)
+
+
+#try to merge race data from fullphen with analysisdat data
+analysisdat_race <- analysisdat %>% left_join(fullphen3400 %>% select(id,cf1ethrace), by="id")
+
+#View(analysisdat_race %>% filter(id %in% raceo$id))
+
+allvars9_norace <- c("hv5_agem","hv5_cbmi","cm1inpov","hv5_mbmi","cm1ethrace","cm1edu","m1g1_comb","m1g4_comb","m1city","cf1ethrace.y","Epithelial.cells","Leukocytes","cm1bsex")
+
+tab1_race = tbl_summary(data=analysisdat_race%>%dplyr::select(allvars9_norace),
+                     missing="ifany",
+                     label = list(cm1bsex ~ "Sex",
+                                  cm1ethrace ~ "Mother's Race",
+                                  cf1ethrace.y~"Father's Race", 
+                                  cm1inpov ~ "Poverty Index Baseline", 
+                                  hv5_agem ~ "Child's Age in Months", 
+                                  cm1edu ~ "Mother's Education Level",
+                                  #cf1edu~"Father's Education Level", 
+                                  hv5_cbmi ~"Child's BMI age 9", 
+                                  hv5_mbmi ~ "Mother's BMI",
+                                  m1g1_comb ~ "Mother's Overall Health",
+                                  m1g4_comb ~ "Mother's Smoking Habits Baseline",
+                                  #m~"Global Methylation",
+                                  m1city ~"Birth City",
+                                  Epithelial.cells~"Percent Epithelial Cells",
+                                  Leukocytes~"Percent Immune Cells"),
+                     #type = list(hv5_ppvtss~'continuous'),
+                     statistic=list(c(cm1inpov,hv5_agem,Epithelial.cells,Leukocytes,hv5_cbmi,hv5_mbmi)~"{median} ({p25},{p75})",#all_continuous()~"{mean} ({sd})",
+                                all_categorical()~"{n} ({p}%)"))
+
+
+tab1_race
+```
+
+
+Table 1 by sex (age 9)
+```{r table1-by-sex-age9}
+#factor the categorical variables (do this more efficicently)
+# catvars <- c("m1city", "cm1bsex","cm1ethrace","cf1ethrace","cm1edu",
+#         "cf1edu","m1g1","m1g4")
+# 
+# allvars9 <- c("cm1inpov","hv5_agem","Epithelial.cells","Leukocytes","hv5_cbmi","hv5_mbmi","m1city", "cm1bsex","cm1ethrace","cf1ethrace","cm1edu","cf1edu","m1g1","m1g4")
+# 
+# #change all categorical variables to a factor variable
+# analysisdat[,catvars] = lapply(analysisdat[,catvars], as.factor)
+
+#change factor labels for pretty table
+levels(analysisdat$cm1bsex) <- c("Male","Female")
+levels(analysisdat$cm1ethrace)= c("White Non-Hispanic","Black, Non-Hispanic","Hispanic","Other")
+levels(analysisdat$cf1ethrace)= c("White Non-Hispanic","Black, Non-Hispanic","Hispanic","Other")
+levels(analysisdat$cm1edu)<- c("Less than HS","HS or equivalent","Some College,tech","College or grad")
+levels(analysisdat$cf1edu)<- c("Less than HS","HS or equivalent","Some College, tech","College or grad")
+levels(analysisdat$m1g1) <- c("Great","Very Good","Good","Fair","Poor")
+levels(analysisdat$m1g4) <- c("2+ packs per day","1-2 packs per day ","Less than 1 pack per day","None")
+
+#check if the continuous vars are skewed
+gals <- analysisdat %>% filter(cm1bsex == "Female")
+fels <- analysisdat %>% filter(cm1bsex == "Male")
+hist(gals$cm1inpov) #pov is skewed
+hist(fels$cm1inpov)#pov is skewed
+hist(gals$hv5_agem) #age is skewed
+hist(fels$hv5_agem) #age skewed
+hist(gals$hv5_cbmi) #bmi mildly skewed
+hist(fels$hv5_cbmi) #bmi mildly skewed
+hist(gals$hv5_mbmi) #not that skewed
+hist(fels$hv5_mbmi)# not that skewed
+#All continuous variables are somewhat skewed: report median (IQR) in table 1 instead of mean (SD) since it could be affected by outliers
+
+tabsex = tbl_summary(data=analysisdat%>%dplyr::select(allvars9),
+                     by=cm1bsex,
+                     missing="ifany",
+                     label = list(cm1bsex ~ "Sex",
+                                  cm1ethrace ~ "Mother's Race",
+                                  cf1ethrace~"Father's Race", 
+                                  cm1inpov ~ "Poverty Index Baseline", 
+                                  hv5_agem ~ "Child's Age in Months", 
+                                  cm1edu ~ "Mother's Education Level",
+                                  #cf1edu~"Father's Education Level", 
+                                  hv5_cbmi ~"Child's BMI age 9", 
+                                  hv5_mbmi ~ "Mother's BMI",
+                                  m1g1_comb ~ "Mother's Overall Health",
+                                  m1g4_comb ~ "Mother's Smoking Habits Baseline",
+                                  #globALL~"Global Methylation",
+                                  Epithelial.cells~"Percent Epithelial Cells",
+                                  Leukocytes~"Percent Immune Cells"),
+                     #type = list(hv5_ppvtss~'continuous'),
+                     statistic=list(c(cm1inpov,hv5_agem,Epithelial.cells,Leukocytes,hv5_cbmi,hv5_mbmi)~"{median} ({p25},{p75})",#all_continuous()~"{mean} ({sd})",
+                                all_categorical()~"{n} ({p}%)"))%>%
+                                add_p()%>%
+                                bold_p(t = 0.05)
+table(analysisdat$cm1bsex)
+
+tabsex
+
+#SAND variable added
+tabsex_bcity = tbl_summary(data=analysisdat%>%select(SAND,cm1bsex),
+                     by=cm1bsex,
+                     missing="no")%>%add_p()
+tabsex_bcity
+
+
+# Save the table as a Word document - some formatting such as bold headers will be lost
+tabsex %>%
+  as_flex_table() %>%
+  save_as_docx(path = here("summary_stats_bysex_table.docx")) #Export the table to Word using flextable package
+
+#abbreviated table for msk pre
+# tabsexabbrev = tbl_summary(data=analysisdat%>%select(cm1bsex,cm1inpov,cm1ethrace,cm1edu,m1g4,hv5_cbmi,hv5_mbmi),
+#                      by=cm1bsex,
+#                      missing="ifany",
+#                      label = list(cm1bsex ~ "Sex",
+#                                   hv5_cbmi ~"Child's BMI age 9", 
+#                                   cm1ethrace ~ "Mother's Race", 
+#                                   cm1inpov ~ "Poverty Index Baseline", 
+#                                   cm1edu ~ "Mother's Education Level",
+#                                   hv5_mbmi ~ "Mother's BMI age 9",
+#                                   m1g4 ~ "Mother's Smoking Habits Baseline"),
+#                                   #m~"Global Methylation",
+#                      #type = list(hv5_ppvtss~'continuous'),
+#                      statistic=list(c(cm1inpov,hv5_cbmi,hv5_mbmi)~"{median} ({p25},{p75})",#all_continuous()~"{mean} ({sd})",
+#                                 all_categorical()~"{n} ({p}%)"))%>%
+#                                 add_p()%>%
+#                                 bold_p(t = 0.05)%>%
+#                                 as_gt() %>%
+#                                 tab_header(
+#                                   title = md("Demographic Characteristics of Cohort"),
+#                                   #subtitle = md("`gtcars` is an R dataset")
+#                                 )
+
+# tabsexabbrev
+# gt::gtsave(tabsexabbrev, file = file.path(paste0(imagesdir,"/msk_prez"), "democohort.png"))
+
+```
+
+
+Table 1 by sex (age 15)
+```{r tbl-1-by-sex-15}
+# Check which variables are skewed
+#poverty variable skewed (report median)
+
+#Figure out where we added this variable to the data
+hist(analysisdat15$cp6povco)
+which(analysisdat15$cp6povco<0) #realized there are 2 people not in wave
+boxplot(analysisdat15$ck6yagem) # weird age 0 people
+which(analysisdat15$ck6yagem<0) #realized there are 4 people not in wave
+# hist(globby$globALL15) #slight skew in global DNAm
+# boxplot(globby$globALL15)
+
+#global DNAm distribution overall at age 9 and 15
+#age 9
+# hist(analysisdat$globALL)
+# analysisdat %>%summarise(medglob = median(globALL),meanglob = mean(globALL),sdglob=sd(globALL))
+
+#age 15
+# hist(analysisdat15$globALL15)
+# analysisdat15 %>%summarise(medglob = median(globALL15),meanglob = mean(globALL15),sdglob=sd(globALL15))
+
+#median and iqr globalDNAm by sex
+# analysisdat15 %>% group_by(as.factor(cm1bsex))%>%summarise(mglob = median(globALL15),
+#      per1 = quantile(globALL15,probs=0.25),per2 = quantile(globALL15,probs=0.75))
+
+#turn negative numbers into NAs
+analysisdat15_na <- analysisdat15 %>% mutate(ck6yagem= ifelse(ck6yagem == -9,NA,ck6yagem),
+                         cp6povco = ifelse(cp6povco <0, NA, cp6povco))
+sum(is.na(analysisdat15_na$ck6yagem)) #4 NAs 
+sum(is.na(analysisdat15_na$cp6povco)) #2 NAs
+
+#table 1 by sex for age 15 data
+tabsex15 = tbl_summary(data=analysisdat15_na%>%select(cm1bsex,Epithelial.cells,Leukocytes,ck6yagem,cp6povco),
+                     by=cm1bsex,
+                     missing="ifany",
+                     missing_text = "Missing",
+                     label = list(cm1bsex ~ "Sex",
+                                
+                                  cp6povco ~ "Poverty Index Baseline", 
+                                  ck6yagem ~ "Child's Age in Months", 
+                                  #hv5_cbmi ~"Child's BMI age 9", 
+                                  #globALL15~"Global Methylation",
+                                  Epithelial.cells~"Percent Epithelial Cells",
+                                  Leukocytes~"Percent Immune Cells"),
+                     #type = list(hv5_ppvtss~'continuous'),
+                     statistic=list(c(cp6povco,ck6yagem,Epithelial.cells,Leukocytes)~"{median} ({p25},{p75})",
+                                    #cp6povco~"{mean} ({sd})",
+                                    all_categorical()~"{n} ({p}%)"))%>%
+  add_p()%>%
+  bold_p(t = 0.05)
+
+tabsex15
+
+```
+
+Average beta-value per probe (9 v 15) and probe proportion
+```{r avg-beta-per-probe-9v15}
+
+#get age 9 beta with all gap probes and sex chr probes
+beta_9 <- beta[,match(analysisdat$MethID,colnames(beta))] #423,668, 816 age 9
+
+#get age 15 beta with all gap probes and sex chr probes
+beta_15 <- beta[,match(analysisdat15$MethID,colnames(beta))] #423,668, 794 age 15
+
+#get rowMeans for each beta matrix (including gaps and sex chr probes for now)
+avgB9 <- rowMeans(beta_9)
+avgB15 <- rowMeans(beta_15)
+avgB9v15 <- data.frame(B9=avgB9,B15=avgB15)
+
+plot(density(avgB15))
+
+#plot average beta value across all samples for age 9 vs age 15
+consistency <- ggplot(data=avgB9v15, aes(x=avgB9*100,y=avgB15*100))+
+  geom_point(size=0.75,alpha=0.5)+
+  theme_classic()+
+  xlab("Mean Percent DNA Methylation per Probe (Age 9)")+
+  ylab("Mean Percent DNA Methylation \n per Probe (Age 15)")+
+  #xlab("Average Beta Value per Probe (Age 9)")+
+  #ylab("Average Beta Value \n per Probe (Age 15)")+
+  theme(axis.text=element_text(size=16),
+        axis.title = element_text(size=19))
+plot1 <- ggMarginal(p=consistency,type="density")
+plot1
+ggsave("/home/alreiner/Projects/ffcw/images/results_figs/avgbeta9v15.png")
+
+plot2 <- consistency + geom_rug()
+plot2
+
+
+#create a colored density plot version
+library(MASS)
+get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+
+avgB9v15$density <- get_density(avgB9v15$B9, avgB9v15$B15, n = 100)
+ggplot(dat) + geom_point(aes(x, y, color = density)) + scale_color_viridis()
+
+consistency_colored <- ggplot(data=avgB9v15)+#, aes(x=avgB9*100,y=avgB15*100,colour=density))+
+  geom_point(aes(x=avgB9*100,y=avgB15*100,colour = density),size=0.75,alpha=0.5)+
+  theme_classic()+
+  xlab("Mean Percent DNA Methylation per Probe (Age 9)")+
+  ylab("Mean Percent DNA Methylation \n per Probe (Age 15)")+
+  #xlab("Average Beta Value per Probe (Age 9)")+
+  #ylab("Average Beta Value \n per Probe (Age 15)")+
+  theme(axis.text=element_text(size=16),
+        axis.title = element_text(size=19))+
+  scale_color_viridis_b()
+
+hist(avgB9v15$density)
+consistency_colored
+ggsave("/home/alreiner/Projects/ffcw/images/results_figs/avgbeta9v15.png")
+
+
+#create a colored density plot
+
+#calculate correlation between avg beta at age 9 vs age 15
+hist(avgB9v15$B9)
+cor(avgB9, avgB15, method="pearson") #0.9998
+cor(avgB9, avgB15, method="spearman")#0.9997
+
+#filter beta 9 to probes that are significant
+betasig9 <- beta_9[rownames(beta_9)%in%age9sigSEBR$probe_id,]
+betaNOTsig9 <- beta_9[!rownames(beta_9)%in%age9sigSEBR$probe_id,]
+
+#filter beta 15 to probes that are sig
+
+betasig15 <- beta_15[rownames(beta_15)%in%age15sigSEBR$probe_id,]
+
+#get rowMeans for each beta matrix (including gaps and sex chr probes for now)
+avgB9_sig <- rowMeans(betasig9)
+avgB9_notsig <- rowMeans(betaNOTsig9)
+B9densitydata <- as.data.frame(append(avgB9_sig,avgB9_notsig))
+sigo <- rep("sig",nrow(age9sigSEBR))
+notsigo <-rep("not_sig",nrow(B9densitydata)-nrow(age9sigSEBR)) 
+
+B9densitydata <-B9densitydata %>% mutate(SigStatus=append(sigo,notsigo))
+colnames(B9densitydata) <- c("MeanBeta","SigStatus")
+
+hist(avgB9_sig)
+avgB15_sig <- rowMeans(betasig15)
+hist(avgB15_sig)
+plot(density(avgB15_sig))
+avgB9v15_sig <- data.frame(B9sig=avgB9_sig,B15sig=avgB15_sig)
+
+
+#plot average beta value across all samples for age 9 vs age 15 FOR ONLY SIG PROBES
+consistency2 <- ggplot(data=avgB9v15, aes(x=avgB9,y=avgB15))+
+  geom_point(size=0.75,alpha=0.5)+
+  theme_classic()+
+  xlab("Average Beta Value per Probe (Age 9)")+
+  ylab("Average Beta Value \n per Probe (Age 15)")+
+  theme(axis.text=element_text(size=16),
+        axis.title = element_text(size=21))
+plot2 <- ggMarginal(p=consistency2,type="density")
+plot12
+ggsave("/home/alreiner/Projects/ffcw/images/results_figs/avgbeta9v15.png")
+
+#try a overlay density plot 
+#create overlaying density plots of significant probe mean methyl vs not sig probes
+dense <- ggplot(B9densitydata, aes(x=MeanBeta*100)) +
+  geom_density(alpha=.25, aes(x=MeanBeta*100))+#, linetype=SigStatus))+
+  theme_classic()+
+  theme(text=element_text(family="Arial"),
+    axis.title =element_text(size=18),
+        axis.text.x = element_text(size=20),
+        axis.text.y=element_text(size=20))+
+  xlab("Distribution of mean percent DNA methylation at age 9")+
+  ylab("Density")+ 
+  labs(linetype="Significance Status")+
+  #guides(fill=guide_legend(title="Significance Status"))+
+  scale_linetype(labels = c("Not Significant","Significant"))+
+ stat_density(aes(x=MeanBeta*100, linetype=SigStatus),
+                  geom="line",position="identity")
+  #scale_fill_manual(name="Significance Status",labels=c("Not #Significant","Significant"),values=c("light grey","dark grey"))
+dense
+png("/home/alreiner/Projects/ffcw/images/PaperManuscript/sigVnotdensity.png",units="in", width=7, height=5, res=150);
+#png("/home/alreiner/Projects/ffcw/images/PaperManuscript/sigVnotdensity_hr.png",units="in", #width=7, height=5, res=800);
+dense
+dev.off();
+
+ggsave("/home/alreiner/Projects/ffcw/images/PaperManuscript/density_sigstatus.png")
+
+
+############################################### get probe proportion at each beta-value category
+
+#make categorical variable for each segment of plot (0, 0-0.25,0.25-0.5,0.5-0.75,0.75-1,1)
+
+#age 9 average beta per probe
+table(cut(avgB9v15$B9, breaks=c(0,0.25,0.5,0.75,1)))
+prop.table(table(cut(avgB9v15$B9, breaks=c(0,0.05,0.25,0.5,0.75,0.95,1))))
+prop.table(table(cut(avgB9v15$B9, breaks=c(0,0.10,0.25,0.5,0.75,0.90,1))))
+prop.table(table(cut(avgB9v15$B9, breaks=c(0,0.25,0.5,0.75,1))))
+
+table(cut(avgB9v15$B9, breaks=c(0,0.25,0.5,0.75,1), include.lowest = F)) #these results give same answers so 0 probes that are exactly 0 or exactly 1 methylation
+
+prop9 <- round(prop.table(table(cut(avgB9v15$B9, breaks=c(0,0.25,0.5,0.75,1)))),4)
+prop9
+
+#age 15 average beta per probe
+table(cut(avgB9v15$B15, breaks=c(0,0.25,0.5,0.75,1)))
+table(cut(avgB9v15$B15, breaks=c(0,0.25,0.5,0.75,1), include.lowest = F)) #these results give same answers so 0 probes that are exactly 0 or exactly 1 methylation
+
+prop15 <- round(prop.table(table(cut(avgB9v15$B15, breaks=c(0,0.25,0.5,0.75,1)))),4)
+prop15
+
+proplabels=c("0-0.25","0.25-0.5","0.5-0.75","0.75-1")
+proptab <- cbind(proplabels,prop9,prop15)
+proptab <- as.data.frame(proptab)%>%
+  mutate(prop9=paste0(as.numeric(prop9)*100," %"),
+         prop15=paste0(as.numeric(prop15)*100," %"))%>%
+  rename("Age 9"=prop9,
+         "Age 15"=prop15)
+gtab <- gt(as.tibble(proptab)) 
+
+plot2 <- gtab %>%
+  fmt_percent(
+    columns = c("Age 9","Age 15"),
+    decimals = 1
+  ) %>%
+  tab_spanner(label="Probe Proportion",columns=c(`Age 9`, `Age 15`))%>%
+  cols_label(proplabels="Average Beta-Value")
+
+tab2 <- ggtexttable(proptab,cols=c("Average Beta-Value","Age 9","Age 15"),rows=NULL)
+tab2
+ggsave("/home/alreiner/Projects/ffcw/images/results_figs/probeproptbl.png")
+```
+
+Global DNAm sex differences
+```{r global-DNAm}
+################Age 9
+#load at beginning
+globby9 <- read_csv("/home/alreiner/Projects/ffcw/data/globalDNAm816.csv")
+globby9 <- globby9 %>% filter(MethID %in% analysisdat$MethID)
+
+#Global DNAM variable added
+tabsex_dnam = tbl_summary(data=globby9%>%select(globALL,cm1bsex),
+                     by=cm1bsex,
+                     missing="no")%>%add_p()
+tabsex_dnam
+
+#merge analysis data and global DNAm data
+analysisdatglob<- left_join(analysisdat, globby9 %>% select(c("MethID","globALL")), by="MethID")
+
+hist(globby9$globALL)
+median(globby9$globALL)
+
+
+#check if the distrib of males and female global DNAm is normal or not
+malesM <- globby9 %>% filter(cm1bsex==1)
+hist(malesM$globALL) # slightly skewed
+boxplot(malesM$globALL)
+
+femsM <- globby9 %>% filter(cm1bsex==2)
+hist(femsM$globALL) #slightly skewed
+
+#Check global methyl diff by sex age 9
+View(globby9 %>% group_by(cm1bsex)%>%
+       summarise(avgm = mean(globALL),
+                 med=median(globALL),
+                 sdm=sd(globALL)))
+
+View(globby9 %>%
+       summarise(avgm = mean(globALL),
+                 sdm=sd(globALL)))
+
+globby9 %>% group_by(as.factor(cm1bsex))%>%
+  summarise(mglob = median(globALL),
+  per1 = quantile(globALL,probs=0.25),
+  per2 = quantile(globALL,probs=0.75)
+)
+
+#by sex boxplot (age9)
+ggplot(data=globby9, aes(x=factor(cm1bsex),y=globALL,fill=factor(cm1bsex)))+geom_boxplot()+
+  xlab("Sex")+
+  ylab("Global DNAm (%)")+
+  theme_classic()+
+  theme(axis.title=element_text(size=23),
+        axis.text = element_text(size=15))+
+  scale_x_discrete(labels=c("Male","Female"))+
+  scale_fill_manual(values=c("#00274C","#FFCB05"),labels=c("Male","Female"))+
+  guides(fill=guide_legend(title="Sex"))
+
+#michigan blue
+rgb(0,39,76, maxColorValue = 255)
+#michigan maize
+rgb(255,203,5, maxColorValue = 255)
+#if normal, use 2 sample t-test to determine if difference between males and females
+#if non-normal, use Mann-Whitney nonpparametric test (verification)
+
+# independent 2-group Mann-Whitney U Test
+wilcox.test(globALL~factor(cm1bsex), data=globby9) #p=0.0003
+t.test(globALL~as.factor(cm1bsex), data=globby9) #p=0.0006, Bsex=0.18
+# where y is numeric and A is A binary factor
+
+#####Instead assume normality and run SLR adjusting for confounding (epi cells, batch, race)
+#globmod9 <- lm(globALL~factor(cm1bsex)+Epithelial.cells+factor(batch)+factor#(cm1ethrace), data=analysisdat)
+#summary(globmod9) 
+#Results: Sex p =0.000163 , Bsex= 0.16562 (adjusting for all covariates, females have on average 0.16 higher global DNAm than males)
+
+globmod9test <- lm(globALL~factor(cm1bsex)+Epithelial.cells+factor(batch), data=analysisdatglob)
+summary(globmod9test) 
+
+#check assumptions of lm
+#linearity: unnecessary for binary variable sex 
+#independence: study design
+#equal var: resids vs fitted
+#normality of resids: qqplot
+# autoplot(globmod9)
+# 
+# #influence diagnostics
+# globmod9.h = hatvalues(globmod9)
+# Hmisc::describe(globmod9.h)
+# globmod9.h[which.max(globmod9.h)] #418 is most outlying in the covariate space (highest leverage)
+# #But leverage itself is pretty low (0.095), where moderate is considered hi > 0.2
+# analysisdat %>% filter(id== "1028265")
+# 
+# #address violation of equal variance assumption by using robust SE
+# lmtest::coeftest(globmod9, vcov. = vcovHC(globmod9, type = "HC3"))
+#Why HC3? reccommendedin sandwich manual paper Long & Ervin
+#sandwich manual says that HC1-HC5 are appropriate for unequal variance situations
+
+#########################
+#Try random effect for plate with mixed linear model
+randlinmod <- lmer(globALL~factor(cm1bsex)+Epithelial.cells+factor(cm1ethrace)+(1|Sample_Plate), data=analysisdatglob)
+summary(randlinmod)
+
+randlinmod_rs <- lmer(globALL~factor(cm1bsex)+Epithelial.cells+factor(cm1ethrace)+(cm1bsex|Sample_Plate), data=analysisdatglob)
+summary(randlinmod_rs)
+AIC(randlinmod)
+AIC(randlinmod_rs) #non-random slopes is better model
+
+########Age 15
+#read in in the data chunk
+globby <- read_csv("/home/alreiner/Projects/ffcw/data/globalDNAm796_15.csv")
+#globby <- globby %>% filter(MethID %in% analysisdat15$MethID)
+
+#how many boys v girls in age 15 data
+table(globby$cm1bsex) #1 boy, 2 girl
+
+#median and iqr globalDNAm by sex
+globby %>% group_by(as.factor(cm1bsex))%>%
+  summarise(mglob = median(globALL15),
+  per1 = quantile(globALL15,probs=0.25),
+  per2 = quantile(globALL15,probs=0.75)
+)
+
+#mean and iqr overall
+globby %>%
+  summarise(mglob = median(globALL15),
+  per1 = quantile(globALL15,probs=0.25),
+  per2 = quantile(globALL15,probs=0.75)
+)
+
+#by sex boxplot (age15)
+ggplot(data=globby, aes(x=factor(cm1bsex),y=globALL15,fill=factor(cm1bsex)))+geom_boxplot()+
+  xlab("Sex")+
+  ylab("Global DNAm (%)")+
+  theme_classic()+
+  theme(axis.title=element_text(size=23),
+        axis.text = element_text(size=15))+
+  scale_x_discrete(labels=c("Male","Female"))+
+  scale_fill_manual(values=c("#00274C","#FFCB05"),labels=c("Male","Female"))+
+  guides(fill=guide_legend(title="Sex"))
+
+
+#test for diff in means (wilcox test for skewed dist)
+wilcox.test(globALL15~factor(cm1bsex), alternative = "two.sided", data=globby) #0.006
+
+#Check global methyl diff by sex age 15
+View(globby %>% group_by(cm1bsex)%>%
+       summarise(avgm = mean(globALL15),
+                 sdm=sd(globALL15)))
+
+# independent 2-group Mann-Whitney U Test
+wilcox.test(globALL15~factor(cm1bsex), data=GlobMdata15)
+t.test(globALL~as.factor(cm1bsex), data=GlobMdata)
+# where y is numeric and A is A binary factor
+
+#####Instead assume normality and run SLR adjusting for confounding (epi cells, batch, race)
+globmod15 <- lm(globALL15~factor(cm1bsex)+Epithelial.cells+factor(batch)+factor(cm1ethrace), data=analysisdat15)
+summary(globmod15) 
+#Results: Sex p =0.000163 , Bsex= 0.16562 (adjusting for all covariates, females have on average 0.16 higher global DNAm than males)
+
+#check assumptions of lm
+#linearity: unnecessary for binary variable sex 
+#independence: study design
+#equal var: resids vs fitted
+#normality of resids: qqplot
+autoplot(globmod15)
+
+#influence diagnostics
+globmod9.h = hatvalues(globmod9)
+Hmisc::describe(globmod9.h)
+globmod9.h[which.max(globmod9.h)] #418 is most outlying in the covariate space (highest leverage)
+#But leverage itself is pretty low (0.095), where moderate is considered hi > 0.2
+analysisdat %>% filter(id== "1028265")
+
+#address violation of equal variance assumption by using robust SE
+lmtest::coeftest(globmod15, vcov. = vcovHC(globmod15, type = "HC3"))
+#Why HC3? reccommendedin sandwich manual paper Long & Ervin
+#sandwich manual says that HC1-HC5 are appropriate for unequal variance situations
+```
+
+Batch Effect Check
+```{r batch-var}
+analysisdatglob<- left_join(analysisdat, globby9 %>% select(c("MethID","globALL")), by="MethID")
+
+calcbatchbeta <- analysisdatglob %>% group_by(Sample_Plate)%>%summarise(meanGlobDNAm=mean(globALL))
+
+#MEAN Global DNAm by plate
+ggplot(data=calcbatchbeta, aes(x=Sample_Plate, y=meanGlobDNAm, colour=factor(Sample_Plate)))+
+  geom_point()+
+  ggtitle("Mean Global DNAm Across Plates for n=796 Age-9 Samples")+
+  xlab("Plate")+
+  ylab("Mean Global DNAm")+
+  scale_fill_brewer(palette="Accent")
+
+#Global DNAm by plate
+png(paste0(imagesdir,"/globDNAmplate.png"),width=9,height=7,units = "in",res=800)
+
+analysisdatglob %>%
+ggplot(aes(x=Sample_Plate, y=globALL, colour=factor(Sample_Plate)))+
+  geom_boxplot()+
+  ggtitle("Global DNAm Across Plates for n=796 Age-9 Samples")+
+  xlab("Plate")+
+  ylab("Global DNAm")+
+  scale_fill_brewer(palette="Accent")+
+  theme(axis.text = element_text(size=20),
+        legend.position = "none",
+        axis.title = element_text(size=23))
+dev.off()
+
+table(analysisdatglob$Sample_Plate)
+batchmeanDNAm <- analysisdatglob %>% group_by(batch)%>%summarise(meanGlobDNAm_batch=mean(globALL))
+
+#Global DNAm by batch
+ggplot(data=batchmeanDNAm, aes(x=batch, y=meanGlobDNAm_batch, colour=factor(batch)))+
+  geom_point()+
+  ggtitle("Mean Global DNAm Across Batches for n=796 Age-9 Samples")+
+  xlab("Batch")+
+  ylab("Mean Global DNAm")+
+  scale_fill_brewer(palette="Accent")
+#+scale_x_discrete(labels=c("1","2","3","4","5","6","NA"))
+#before:%>% group_by(Sample_Plate)
+
+wa <- analysisdatglob %>% group_by(Sample_Plate)%>%summarise(count=n())
+sum(wa$count)
+
+analysisdatglob_qc <- left_join(analysisdatglob, pdqc %>% select(c("MethID","MQC","UQC","cut")), by="MethID")
+
+bleep <- analysisdatglob_qc %>% group_by(Sample_Plate)%>%summarise(meanMQC=mean(MQC),
+                                                                   meanUQC=mean(UQC),
+                                                                   medianMQC=median(MQC),
+                                                                   medianUQC=median(UQC))
+
+
+#MQC by plate
+
+ggplot(data=bleep, aes(x=Sample_Plate, y=meanMQC, colour=factor(Sample_Plate)))+
+  geom_point()+
+  #geom_point(aes(x=Sample_Plate, y=meanUQC, colour=factor(Sample_Plate)))+
+  ggtitle("Mean MQC Across Plates for n=796 Age-9 Samples")+
+  xlab("Plate")+
+  ylab("MQC")+
+  scale_fill_brewer(palette="Accent")
+
+#MQC
+png(paste0(imagesdir,"/PlateQC/MQCbyplate.png"),width=9,height=7,units = "in",res=800)
+ggplot(data=analysisdatglob_qc, aes(x=Sample_Plate, y=MQC, colour=factor(Sample_Plate)))+
+  geom_boxplot()+
+  #geom_point(aes(x=Sample_Plate, y=meanUQC, colour=factor(Sample_Plate)))+
+  ggtitle("MQC Across Plates for n=796 Age-9 Samples")+
+  theme(legend.position = "none",
+        axis.text = element_text(size=20),
+        axis.title = element_text(size=20))+
+  xlab("Plate")+
+  ylab("MQC")+
+  ylim(10,13)+
+  scale_fill_brewer(palette="Accent")
+dev.off()
+
+#Which plates are in which batch
+analysisdatglob_qc %>% group_by(batch)%>%mutate(bsamps=n(Sample_Plate))
+
+table(analysisdatglob_qc$batch,analysisdatglob_qc$Sample_Plate)
+
+################Sex Distrib acorss Plates
+#plot distrib by sex across plates
+calcpropbatch <- analysisdat %>% group_by(Sample_Plate, cm1bsex)%>%summarise(numsex_b=n())%>%mutate(freq=numsex_b/sum(numsex_b))
+png(paste0(imagesdir,"/globDNAmplate_sexdist.png"),width=9,height=7,units = "in",res=800)
+
+
+#plot 1: check for batch effect (confounding check: plate correlation with sex)
+ggplot(data=calcpropbatch, aes(x=Sample_Plate, y=freq, fill=as.factor(cm1bsex)))+
+  geom_bar(stat="identity")+
+  ggtitle("Sex Distribution Across Batches for n=808 Age-9 Samples")+
+  xlab("Plate")+
+  ylab("Frequency")+
+  scale_fill_brewer(palette="Accent", name="Sex", labels=c("Male","Female"))+
+  theme(axis.title = element_text(size=23),
+        axis.text = element_text(size=20))
+dev.off()
+```
+
+
+Gap probes overlap
+```{r gap-venn}
+#load age 9 and age 15 gap probe lists
+#alter gap probes in RepeatIncExc_9.R/RepeatGlobalDNAm.R
+#gap probes alone: gappys.R
+gaps_9 <- readRDS("/home/alreiner/Projects/ffcw/output/gapprobes9.rds") #796
+gaps794_15 <- readRDS("/home/alreiner/Projects/ffcw/output/gapprobes796.rds")
+
+grid.newpage()                    # Create new plotting page
+plot3 <- draw.pairwise.venn(area1 = length(gaps794_15),    # Draw pairwise venn diagram
+                   area2 = length(gaps_9),
+                   cross.area = length(intersect(gaps794_15,gaps_9)),
+                   #category = c(paste0("Age 9 gap probes (n=",length(gaps_9),")"),paste0("Age 15 gap probes (n=",length(gaps794_15),")")),
+                   cex=1.1, #1.4
+                   cat.cex=1.1, #1.5
+                   cat.dist = c(0.08, 0.08),# was (0.07, 0.06)
+                   cat.pos = c(37, 325), #33, 325 works well ish
+                   margin=0.04,
+                   #cat.default.pos = "outer",
+                   #cat.pos=c(220,160), #320,40
+                   #cat.just=rep(list(c(0.75, 0.75)), 2),
+                   scaled=T)
+plot3
+
+
+png("/home/alreiner/Projects/ffcw/images/results_figs/gappyvenn.png",units="in", width=7, height=5, res=300);
+grid.draw(plot3);
+dev.off();
+
+#create function that calculates overlap
+overlap_nums <- function(age9, age15){
+union <- length(union(age9, age15)) # elements in union (all probes found sig between the two ages)
+#intersect=returns the elements that are in both sets (the sig probes found in both age9 and age15)
+intersect(age9, age15) # 
+#make list of overlapping probes
+overlap <- length(intersect(age9, age15))
+inter <- overlap/union
+return(inter) #concordance of ALL sig probes
+}
+
+#determine concordance of gap probes
+overlap_nums(gaps816_9, gaps794_15)
+
+#determine percent of age 9 gap probes also in age 15 gap probes and vv
+int <- length(intersect(gaps_9, gaps794_15)) #9956 gaps in common at 2 time points
+int/length(gaps_9) #% of age 9 gap probes were also gaps at age 15
+int/length(gaps794_15) #% of age 15 gap probes also gaps at age 9
+```
+
+Attempt to combine figure 2 figures into one image
+```{r combined-fig2, dev="png"}
+figure <- ggarrange(plot1, plot3, tab2,
+                    labels = c("A", "B", "C"),
+                    ncol = 2, nrow = 2, widths=c(1.5,1))
+
+figure
+
+#load in pngs
+avgb915 <- readPNG("/home/alreiner/Projects/ffcw/images/results_figs/avgbeta9v15.png")
+gappyvenn <- readPNG("/home/alreiner/Projects/ffcw/images/results_figs/gappyvenn.png")
+proptbl <- readPNG("/home/alreiner/Projects/ffcw/images/results_figs/probeproptbl.png")
+
+grid.arrange(plot1,grobTree(plot3),tab2,ncol=2)
+g <- arrangeGrob(plot1,grobTree(plot3),tab2,ncol=2)
+ggsave(g,filename = "/home/alreiner/Projects/ffcw/images/results_figs/fig2plottest2.png",
+       width = 9, height = 4, dpi = 300, units = "in")
+
+fig2plot <- plot_grid(plot1, grobTree(plot3),ncol=1, labels = c('A', 'B'))
+fig2plot
+save_plot(fig2plot, file="/home/alreiner/Projects/ffcw/images/results_figs/fig2plottest.png")
+
+g2 <- ggplotGrob(p2)
+g3 <- ggplotGrob(p3)
+g <- rbind(g2, g3, size = "first")
+g$widths <- unit.pmax(g2$widths, g3$widths)
+grid.newpage()
+grid.draw(g)
+```
+
+
+SEBR model (Age 9 vs 15) results
+```{r visualizing-SEBR-model-results}
+#load in lmfit results: must change if sample changes
+# #load sig probes SEBR model
+age9sigSEBR <-readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9SERsig247block.rds")
+age9fullSEBR <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9SERfullblock.rds")
+
+age15sigSEBR <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age15SERsig247block.rds")
+
+#updated age 9 full annotations
+
+#add annotation to age 9 full data
+saveRDS(add_annotations(age9fullSEBR), paste0("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9_SEBR_full_annot",nrow(age9fullSEBR),".rds"))
+
+
+#now get the annotated full data and subset only to significant probes
+age9fullanot <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9_SEBR_full_annot391980.rds")
+
+#format for Supp Table
+age9fullanot_sup <- age9fullanot %>% select(-c(B,adj.P.Val,gene_group,regulatory_feature))
+write.csv(age9fullanot_sup, file="/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9full_annotated_supp.csv")
+
+age9sigannot <- age9fullanot %>% filter(probe_id %in% age9sigSEBR$probe_id)
+
+
+#updated age 15 full annotations
+
+#Get table in order of lowest p value then by abs log FC
+age9sigannot <- age9sigannot[order(age9sigannot$P.Value,abs(age9sigannot$logFC)),]
+age9sigannot <- age9sigannot %>% select(-c(B,regulatory_feature))
+colnames(age9sigannot)
+View(age9sigannot)
+ordy <- c("probe_id","chr","pos","logFC","AveExpr","P.Value","island","gene","gene_group")
+age9sigannot <- age9sigannot[1:10,ordy]
+write.csv(age9sigannot, file="/home/alreiner/Projects/ffcw/output/BlockProbeResults/tab2outputage9sig.csv")
+
+
+#Same table for age 15
+#now get the annotated full data and subset only to significant probes
+age15fullanot <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age15_SEBR_full_annot392967.rds")
+
+#get age 15 supplemental table
+age15fullanot_sup <- age15fullanot %>% select(-c(B,adj.P.Val,gene_group,regulatory_feature))
+write.csv(age15fullanot_sup, file="/home/alreiner/Projects/ffcw/output/BlockProbeResults/age15full_annotated_supp.csv")
+
+
+age15sigannot <- age15fullanot %>% filter(probe_id %in% age15sigSEBR$probe_id)
+#updated age 15 full annotations
+
+#Get table in order of lowest p value then by abs log FC
+age15sigannot <- age15sigannot[order(age15sigannot$P.Value,abs(age15sigannot$logFC)),]
+age15sigannot <- age15sigannot %>% select(-c(B,regulatory_feature))
+ordy <- c("probe_id","chr","pos","logFC","AveExpr","P.Value","island","gene","gene_group")
+age15sigannot <- age15sigannot[1:10,ordy]
+write.csv(age15sigannot, file="/home/alreiner/Projects/ffcw/output/BlockProbeResults/tab2outputage15sig.csv")
+
+#check mean DNAm in males vs fems for top en probes
+fems15 <- analysisdat15 %>% filter(cm1bsex==2)
+mems15 <- analysisdat15 %>% filter(cm1bsex==1)
+rowMeans(betanogapnoXY_15[age15sigannot$probe_id,fems15$MethID])
+rowMeans(betanogapnoXY_15[age15sigannot$probe_id,mems15$MethID])
+#check 
+
+#####Determine absolute average effect size for age 9 sig probes
+#check distrib of effect sizes to see if skewed
+hist(age9sigSEBR$logFC)
+View(age9sigSEBR %>% summarise(mean(abs(logFC))))
+
+######Determine age9 sig probes that were also sig at age 15 using threshold of alpha/num sig at age9
+alpha = 0.05/nrow(age9sigSEBR)
+
+#load in full age 15 results
+age15full <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age15SERfullblock.rds")
+
+#probes meeting look-up level significnace (bonferroni -corrected alpha)
+age15repprobes <- age15full %>% filter(P.Value < alpha) #11542 sig probes using bonferroni adjusted threshold 
+
+#num of sig probes at age9 within the prior subset
+sum(rownames(age9sigSEBR) %in% rownames(age15repprobes)) #7421
+
+#num of age9 sig probes that had same direction of effect in the age 15 probes
+reppy <- age15repprobes %>% filter(probe_id %in% age9sigannot$probe_id)
+#merge age9sigannot logFC by this dataset
+mergyrep <- left_join(reppy%>%select(probe_id,logFC),age9sigannot %>% select(probe_id,logFC), by="probe_id")
+mergyrep <- mergyrep %>% rename("ReplicatedAge15Effect"="logFC.x",
+                            "Age9Effect"="logFC.y")
+#determine the number of probes for which ReplicatedAge15Effect is same sign as Age9Effect
+sum(sign(mergyrep$ReplicatedAge15Effect)==sign(mergyrep$Age9Effect)) #ALL 7421 probes have the same direction of effect
+
+
+#num of sig probes at age 9 that replicated at age 15 with SAME dir of effect
+indicesofReplicated <- which(rownames(age9sigSEBR) %in% rownames(age15repprobes))
+age9sigrep <- age9sigSEBR[indicesofReplicated,]
+
+#determine of the probes that were NOT sig at the bonferroni level, determine the proportion that still had same direction of effect
+age9notrep <- age9sigSEBR %>% filter(!probe_id %in% reppy$probe_id)
+mergyNOTrep <- left_join(age9notrep%>%select(probe_id,logFC),age15full %>% select(probe_id,logFC,P.Value), by="probe_id")
+
+#check smallest p value in age 15 analysis for these probes that didn't replicate at age 15 but did at age9
+min(mergyNOTrep$P.Value, na.rm=T) #just above the threshold: 5.96 E -6
+max(mergyNOTrep$P.Value, na.rm=T) #0.74
+
+#count how many NA values that were not tested at age 15
+sum(is.na(mergyNOTrep$logFC.y)) #10 probes were not tested at age 15
+
+mergyNOTrep1 <- mergyNOTrep %>% filter(!is.na(logFC.y)) #remove probes with NA
+sum(sign(mergyNOTrep1$logFC.x)==sign(mergyNOTrep1$logFC.y)) #ALL 997/999 probes have the same direction of effect
+997/999
+
+mergyNOTrep2 <- mergyNOTrep1 %>% filter(P.Value<0.0085) #remove probes with NA
+sum(sign(mergyNOTrep2$logFC.x)==sign(mergyNOTrep2$logFC.y)) #902/999 probes have the same direction of effect
+902/999
+#90.2% of probes that did not replicated did end up replicating at a less stringent p value threshold
+
+
+#check if our strongest signla sat age 9 are significant at age 15
+top100age9 <- age9sigSEBR[order(age9sigSEBR$P.Value),]
+top100age9 <- top100age9[1:419,]
+sum(top100age9$probe_id %in% age15repprobes$probe_id) #all 419 of the top 419 probes at age 9 are replicated at age 15 (anything past 419 does not meet the criteria of ALL probes replicating)
+
+#num of probes at age 15 at p=2.4 E -7 that are NOT in age 9 sig set
+sum(!rownames(age15sigSEBR) %in% rownames(age9sigSEBR)) #1845 probes
+
+#get indices of these probes
+indicesage15only <- which(!rownames(age15sigSEBR) %in% rownames(age9sigSEBR)) #1845 probes
+
+age15notin9 <- age15sigSEBR[indicesage15only,]
+age15notin9_m <- left_join(age15notin9%>%select(probe_id,logFC),age9fullanot %>% select(probe_id,logFC), by="probe_id")
+
+#count how many NA values that were not tested at age 15
+sum(is.na(age15notin9_m$logFC.y)) #13 probes were not tested at age9
+
+age15notin9_m1 <- age15notin9_m %>% filter(!is.na(logFC.y)) #remove probes with NA
+sum(sign(age15notin9_m1$logFC.x)==sign(age15notin9_m1$logFC.y)) #1798/1832 probes have the same direction of effect
+1798/1832
+
+
+#filter age 15 data to these probes and get rownames in order to filter age 9 data
+age15sigSEBR_ONLY <- age15sigSEBR[indicesage15only,]
+probesage15 <- rownames(age15sigSEBR_ONLY)
+
+#filter age 9 data to these probes and take average p-value
+#usefull 
+age9fullSEBR_sig15 <- age9fullSEBR %>%
+  filter(probe_id %in% probesage15) #1832 total of the 1845 probes found (some were gaps in age 9)
+boxplot(age9fullSEBR_sig15$P.Value)
+hist(age9fullSEBR_sig15$P.Value, xlim=c(0,0.05),breaks=10) #most of p-values are hovering around sig threshold with some very non sig-values
+
+#sanity check
+do <- c("A","B","D") #age 15
+dop <- c("A","B","C") #age9
+which(!do %in% dop) #1845 probes
+
+#determine whether these probes p-values were far away from the threshold
+
+#Venn
+#Venn diag for sig probes at age 9 and 15
+grid.newpage()                    # Create new plotting page
+vensig <- draw.pairwise.venn(area1 = length(rownames(age9sigSEBR)),    # Draw pairwise venn diagram
+                   area2 = length(rownames(age15sigSEBR)),
+                   cross.area = length(intersect(rownames(age9sigSEBR),rownames(age15sigSEBR))),
+                   category = c(paste0("Age 9 significant probes \n n=(",nrow(age9sigSEBR),")"),paste0("Age 15 significant probes \n n=(",nrow(age15sigSEBR),")")),
+                   cex=1.3,
+                   cat.cex=1.1,
+                   cat.dist = c(0.03, 0.10),#.113
+                   cat.pos = c(185, 145), #was 328,28
+                   margin=0.04,
+                   #cat.default.pos = "outer",
+                   #cat.pos=c(220,160), #320,40
+                   cat.just=rep(list(c(0.75, 0.75)), 2),
+                   scaled=T)
+                   #cat.prompts = T)
+
+                   #  cex=1.1, #1.4
+                   # cat.cex=1.1, #1.5
+                   # cat.dist = c(0.08, 0.08),# was (0.07, 0.06)
+                   # cat.pos = c(37, 325), #33, 325 works well ish
+                   # margin=0.04
+#find overlap of ALL significant probes
+conc <- overlap_nums(age9 = rownames(age9sigSEBR), age15 = rownames(age15sigSEBR))
+commo <- intersect(rownames(age9sigSEBR),rownames(age15sigSEBR))
+commoage9 <- age9sigSEBR %>% filter(probe_id %in% commo)
+commoage15 <- age15sigSEBR %>% filter(probe_id %in% commo)
+#order commoage15 same as commoage9
+commoage15 <-commoage15[match(commoage9$probe_id,commoage15$probe_id),]
+
+sum(sign(commoage15$logFC)==sign(commoage9$logFC)) #all 6608 probes in common between age9 and age 15 at epigenome wide sig level have same direction
+
+#union
+length(union(age9, age15))
+length(intersect(age9, age15))
+
+#determine percent of age 9 gap probes also in age 15 gap probes and vv
+intsp <- length(intersect(age9sigSEBR, rownames(age15sigSEBR))) #8859 gaps in common at 2 time points
+intsp/nrow(age9sigSEBR) #% of age 9 signif probes were also signif at age 15
+intsp/nrow(age15sigSEBR) #% of age 15 signif probes also signif at age 9
+
+#Find intersect of F>M probes
+sigprobes_f_SEBR15 <-age15sigSEBR %>% filter(logFC>0)%>%rownames() # female biased (15)
+sigprobs_f_SEBR9 <- age9sigSEBR %>% filter(logFC>0)%>%rownames() # female biased (9)
+OFM <- overlap_nums(age9 = sigprobs_f_SEBR9, age15 = sigprobes_f_SEBR15)
+#% overlap of female-biased probes between age 9 and 15
+
+#Proportion of probes that are fem-biased 
+#age 9
+length(sigprobs_f_SEBR9)/nrow(age9sigSEBR)
+#age 15
+length(sigprobs_f_SEBR15)/nrow(age15sigSEBR)
+
+#Find intersect of M>F probes
+sigprobes_m_SEBR15 <-age15sigSEBR %>% filter(logFC<0)%>%rownames() # 1344 male biased age 15
+sigprobs_m_SEBR9 <- age9sigSEBR %>% filter(logFC<0)%>%rownames() # 1354 male biased age 9
+OMF <- overlap_nums(age9 = sigprobs_m_SEBR9, age15 = sigprobes_m_SEBR15)
+#% overlap of female-biased probes between age 9 and 15
+
+length(sigprobs_m_SEBR9)#/nrow(age9sigSEBR)
+
+
+#Create gttable summarizing this information
+dirlabels=c("F>M","M>F","Total")
+age9 <- c(length(sigprobs_f_SEBR9),length(sigprobs_m_SEBR9),nrow(age9sigSEBR))
+age15 <- c(length(sigprobes_f_SEBR15),length(sigprobes_m_SEBR15),nrow(age15sigSEBR))
+overy <- c(OFM,OMF,conc)
+
+sigprobtbl <- cbind(dirlabels,age9,age15,overy)
+sigprobtbl <- as.data.frame(sigprobtbl)%>%
+  mutate(age9=as.numeric(age9),
+         age15=as.numeric(age15),
+         overy=paste0(round(as.numeric(overy)*100,2)," %"))%>%
+  rename("Age 9"=age9,
+         "Age 15"=age15,
+         "Overlap"=overy)
+rownames(sigprobtbl) <- dirlabels
+sigprobtbl <- sigprobtbl %>% select(-dirlabels)
+
+#final table for now
+tabsigprobes <- ggtexttable(sigprobtbl,cols=c("Age 9","Age 15","Overlap"),rows=dirlabels)%>%
+  tab_add_footnote("**p-value threshold of 2.4 E -7", size=8,vjust=0.005)
+tabsigprobes 
+
+#arrange table and venn together
+#grid.arrange(tabsigprobes,grobTree(plot3),tab2,ncol=2)
+g1 <- arrangeGrob(tabsigprobes,grobTree(vensig),ncol=2)
+ggsave(g1,filename = "/home/alreiner/Projects/ffcw/images/results_figs/fig3plottest.png",
+       width = 9, height = 4, dpi = 300, units = "in")
+
+
+#another type of table trial
+gtabsigprobes <- gt(sigprobtbl,
+                    rownames_to_stub = T)%>%
+  fmt_percent(
+    columns = "Overlap",
+    decimals = 1
+  ) #%>%
+  #tab_spanner(label="Probe Proportion",columns=c(`Age 9`, `Age 15`))%>%
+  #cols_label(proplabels="Average Beta-Value")
+
+library(flextable)
+library(gtsummary)
+packageVersion("gtsummary")
+
+gtabsigprobes %>%
+  as_gt()%>%
+  gt::gtsave(filename = ".")
+  
+tab2 <- ggtexttable(proptab,cols=c("Average Beta-Value","Age 9","Age 15"),rows=NULL)
+tab2
+ggsave("/home/alreiner/Projects/ffcw/images/results_figs/probeproptbl.png")
+
+#####Age 9 vs age 15 effect estimate plot
+
+#temporary load in data
+TopHits_SEBR_full <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9SERfullblock.rds")
+TopHits_modSEBR15_full <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age15SERfullblock.rds")
+# make rownames a column for each model
+#TopHits_SEBR_full$Probe <- rownames(TopHits_SEBR_full)
+#TopHits_modSEBR15_full$Probe <- rownames(TopHits_modSEBR15_full)
+
+#merge by probe name log
+TAtest <- merge(TopHits_SEBR_full %>% select(probe_id,logFC), TopHits_modSEBR15_full%>%select(probe_id,logFC), by="probe_id", all=FALSE)
+TAtest <- TAtest %>% dplyr::rename(Age9SEBP=logFC.x,
+                            Age15SEBP=logFC.y)
+#404,669 probes in both age9 and age 15 analyses
+
+#make plot of effect estimates(y) per model (using 404,669 probes)
+Ninevfift <- ggplot(data=TAtest, aes(x=Age9SEBP*100,y=Age15SEBP*100))+
+  geom_point(alpha=0.2)+
+  xlim(-20,40)+
+  ylim(-20,40)+
+  theme_classic()+
+  theme(axis.title.x =element_text(size=18,margin=margin(t=20)),
+        axis.title.y =element_text(size=18,margin=margin(r=20)),
+        axis.text.x = element_text(size=20),
+        axis.text.y=element_text(size=20))+
+  xlab("Adjusted % difference in DNA methylation \nbetween female and male children at age 9")+
+  ylab("Adjusted % difference in DNA methylation \nbetween female and male children at age 15")+
+  geom_abline(intercept=0,slope=1)
+#png(paste0(imagesdir,"/PaperManuscript/ninevfift.png"),width=9,height=7,units = "in",res=800)
+png(paste0(imagesdir,"/PaperManuscript/ninevfift_lr.png"),width=9,height=8,units = "in",res=150)
+Ninevfift
+dev.off()
+
+
+Ninevfift_lab <- ggplot(data=TAtest, aes(x=Age9SEBP*100,y=Age15SEBP*100))+
+  geom_point(alpha=0.2)+
+  xlim(-20,40)+
+  ylim(-20,40)+
+  theme_classic()+
+  theme(axis.title.x =element_text(size=18,margin=margin(t=20)),
+        axis.title.y =element_text(size=18,margin=margin(r=20)),
+        axis.text.x = element_text(size=20),
+        axis.text.y=element_text(size=20))+
+  xlab("Adjusted % difference in DNA methylation \nbetween female and male children at age 9")+
+  ylab("Adjusted % difference in DNA methylation \nbetween female and male children at age 15")+
+  geom_abline(intercept=0,slope=1)+
+  #annotate("rect", xmin=-20, xmax=0, ymin=-20, ymax=0, alpha=0.2, fill="dark grey") +
+  #annotate("rect", xmin=0, xmax=40, ymin=0, ymax=40, alpha=0.2, fill="light grey")
+  geom_hline(yintercept = 0, linetype="dotted",color="black",size=0.5)+
+  geom_vline(xintercept = 0, linetype="dotted",color="black",size=0.5)
+
+
+
+png(paste0(imagesdir,"/PaperManuscript/ninevfift_lines.png"),width=9,height=8,units = "in",res=800)
+#png(paste0(imagesdir,"/PaperManuscript/ninevfift_lines_lr.png"),width=9,height=8,units = #"in",res=150)
+Ninevfift_lab
+dev.off()
+
+#find correlation of effect estimate for sex between times
+hist(TAtest$Age9SEBP)
+cor(TAtest$Age9SEBP, TAtest$Age15SEBP, method="pearson")
+cor(TAtest$Age9SEBP, TAtest$Age15SEBP, method="spearman")
+
+
+#combine age9 vs 15 hit figures together
+lay <- rbind(c(1,1,1,2,2),
+             c(1,1,1,2,2),
+             c(1,1,1,3,3),
+             c(1,1,1,3,3))
+g1 <- arrangeGrob(Ninevfift,grobTree(vensig),tabsigprobes,ncol=2, layout_matrix =lay )
+ggsave(g1,filename = "/home/alreiner/Projects/ffcw/images/results_figs/fig3plottest.png",
+       width = 14, height = 6, dpi = 300, units = "in")
+
+
+
+#check that age 9 sig probes were also in the age 15 fullt results
+sum(age9sigSEBR$probe_id %in% TopHits_modSEBR15_full$probe_id) #8420/8430 of age 9 probes were tested in saliva
+
+sum(age15sigSEBR$probe_id %in% TopHits_SEBR_full$probe_id) #8440/8453 of age 15 sig probes were tested at age 9
+
+#######Volcano Plot
+TopHits_SEBR_full$sigStatus = ifelse(TopHits_SEBR_full$logFC < 0 & TopHits_SEBR_full$P.Value < 2.4E-7, "Male",
+                                     ifelse(TopHits_SEBR_full$logFC > 0& TopHits_SEBR_full$P.Value < 2.4E-7, "Female","Not Significant"))
+table(TopHits_SEBR_full$sigStatus )
+
+volky <- ggplot(data=TopHits_SEBR_full, aes(x=logFC*100, y=-log10(P.Value), col=as.factor(sigStatus)))+ #col=as.factor(abs(logFC)>0.2 & adj.P.Val<0.05)
+  geom_point(alpha=0.2)+
+  ##377EB8, #984EA3
+  scale_color_manual(values = c("Female" = "grey12", "Male" = "grey12","Not Significant"="gray56"))+ #azure 3 pretty
+   #scale_color_grey(start = 0.8, end = 0.2)+
+  xlim(-35,35)+
+  #xlim(-0.35,0.35)+  #left could be -0.2 to catch all points
+  ylim(0,300)+
+  xlab("Adjusted Difference in DNA methylation between Female and Male Children (%)")+
+  ylab("-log10 p-value")+
+  theme_classic()+
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=20),
+    axis.text.x =element_text(size=20),
+        axis.text.y =element_text(size=20),
+       # axis.title = element_text(size=24),
+    axis.title.x =element_text(size=22,margin=margin(t=20)),
+        axis.title.y =element_text(size=22,margin=margin(r=20)),
+    legend.position="none")+
+  geom_hline(yintercept = 6.62, linetype="dotted",color="black",size=0.5)+
+  geom_vline(xintercept = 0, linetype="dotted",color="black",size=0.5)+
+  #annotate(geom = "label", x = 0.28, y = 18, label = "p=2.4E-7")+
+  #annotate(geom="label",x=0.28,y=150, size=5,label="Higher Methylation \nin Females")+
+  #annotate(geom="label",x=-0.25,y=150, size=5,label="Higher Methylation \nin Males")+
+  annotate(geom="label",x=28,y=150, size=5,label="Higher methylation \nin female children")+
+  annotate(geom="label",x=-25,y=150, size=5,label="Higher methylation \nin male children")+
+  geom_text_repel(data=subset(TopHits_SEBR_full, P.Value < 10E-270),
+            aes(logFC*100,-log10(P.Value),label=probe_id),show.legend=F)
+
+png(paste0(imagesdir,"/PaperManuscript/voklkyhr.png"),width=13,height=8,units = "in",res=800)
+#png(paste0(imagesdir,"/PaperManuscript/voklkycolor_lr.png"),width=13,height=8,units = "in",res=150)
+
+volky
+dev.off()
+
+display.brewer.pal(n = 8, name = 'Set1')
+brewer.pal(n = 8, name = "Set1")
+
+display.brewer.pal(n = 8, name = 'BrBG')
+brewer.pal(n = 8, name = "BrBG")
+
+TopHits_SEBR_full$sigStatus <- factor(TopHits_SEBR_full$sigStatus)
+#levels(TopHits_SEBR_full$sigStatus) <- c("Male","Female","Not Significant")
+levels(TopHits_SEBR_full$sigStatus)
+
+foo <- TopHits_SEBR_full %>% filter(sigStatus == "Female")
+boxplot(foo$logFC)
+moo <- TopHits_SEBR_full %>% filter(sigStatus == "Male")
+boxplot(moo$logFC)
+
+TopHits_SEBR_full$newSigStatus = factor(TopHits_SEBR_full$sigStatus,levels=c("Male","Female","Not Significant"))
+
+#Side by side boxplot of distribution of effect sizes in males vs females
+sidebsideboxy <- ggplot(data=TopHits_SEBR_full %>% filter(sigStatus == "Female" | sigStatus=="Male"), aes(x=newSigStatus,y=logFC, fill=as.factor(newSigStatus)))+
+  geom_boxplot()+
+  scale_x_discrete(labels=c("Higher in Males","Higher in Females"))+
+  #scale_color_brewer(palette="Accent")+
+  scale_fill_manual(labels=c("Higher in Males","Higher in Females"),values = c("Female" = "#377EB8", "Male" = "#984EA3"))+
+  #xlim(-0.3,0.3)+
+  #ylim(0,300)+
+  ylab("Effect Size \nDistribution")+
+  xlab("")+
+  #ylab("-log10 p-value")+
+  theme_classic()+
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=20),
+    axis.text.x =element_text(size=20),
+        axis.text.y =element_text(size=20),
+        axis.title = element_text(size=20),
+    legend.position="none")#+
+  #annotate(geom="label",x=0.2,y=150, label="Higher in Females")+
+  #annotate(geom="label",x=-0.2,y=150, label="Higher in Males")
+png(paste0(imagesdir,"/PaperManuscript/sidebsidebox_logFC.png"),width=9,height=7,units = "in",res=800)
+sidebsideboxy
+dev.off()
+
+# Create a transparent theme object
+transparent_theme <- theme(
+ axis.title.x = element_blank(),
+ axis.title.y = element_blank(),
+ axis.text.x = element_blank(), 
+ axis.text.y = element_blank(),
+ axis.ticks = element_blank(),
+ panel.grid = element_blank(),
+ axis.line = element_blank(),
+ panel.background = element_rect(fill = "transparent",colour = NA),
+ plot.background = element_rect(fill = "transparent",colour = NA))
+
+FEMboxy <- ggplot(data=TopHits_SEBR_full %>% filter(sigStatus == "Female"), aes(y=logFC))+
+  geom_boxplot(fill="#377EB8")+
+  scale_x_discrete(labels=c("Higher in Females"))+
+  #scale_color_brewer(palette="Accent")+
+  scale_fill_manual(labels=c("Higher in Females"),values = c("Female" = "#377EB8"))+
+  #xlim(-0.3,0.3)+
+  #ylim(0,300)+
+  ylab("Higher in Females")+
+  xlab("")+
+  #ylab("-log10 p-value")+
+  theme_classic()+
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=20),
+    axis.text.x =element_text(size=20),
+        axis.text.y =element_text(size=20),
+        axis.title = element_text(size=20),
+    legend.position="none")+coord_flip()+
+  transparent_theme
+FEMboxy
+
+MALEboxy <- ggplot(data=TopHits_SEBR_full %>% filter(sigStatus == "Male"), aes(y=logFC))+
+  geom_boxplot(fill="#984EA3")+
+  scale_x_discrete(labels=c("Higher in Males"))+
+  #scale_color_brewer(palette="Accent")+
+  scale_fill_manual(labels=c("Higher in Males"),values = c("Female" = "#377EB8"))+
+  #xlim(-0.3,0.3)+
+  #ylim(0,300)+
+  ylab("Higher in Males")+
+  xlab("Boxplots")+
+  #ylab("-log10 p-value")+
+  theme_classic()+
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=20),
+    axis.text.x =element_text(size=20),
+        axis.text.y =element_text(size=20),
+        axis.title.x = element_text(size=20),
+    axis.title.y=element_text(size=20, colour = "white"),
+    legend.position="none")+coord_flip()+
+  transparent_theme
+MALEboxy
+
+p2_grob = ggplotGrob(MALEboxy)
+p3_grob = ggplotGrob(FEMboxy)
+
+
+png(paste0(imagesdir,"/PaperManuscript/voklkyengrainedbox.png"),width=9,height=7,units = "in",res=800)
+volky + annotation_custom(grob = p2_grob, xmin = -0.2, xmax = 0, 
+                       ymin = 250, ymax = 450)+annotation_custom(grob = p3_grob, xmin = 0, xmax = 0.3, 
+                       ymin = 250, ymax = 450)
+dev.off()
+```
+
+
+```{r check-most-sig-probes}
+#######################
+#Top Probe 1
+#######################
+betastopprobe1 <- betanogapnoXY_9["cg11643285",]
+sexvals <- analysisdat %>% select(MethID,cm1bsex)
+sexvals$betas <- betastopprobe1
+
+topprobehist <- ggplot(data=sexvals, aes(x=factor(cm1bsex),y=betas, fill=as.factor(cm1bsex)))+
+  geom_boxplot()+
+  scale_x_discrete(labels=c("Males","Females"))+
+  #scale_color_brewer(palette="Accent")+
+  scale_fill_manual(labels=c("Males","Females"),values = c("Female" = "#377EB8", "Male" = "#984EA3"))+
+  #xlim(-0.3,0.3)+
+  #ylim(0,300)+
+  ylab("Beta Values")+
+  xlab("")+
+  #ylab("-log10 p-value")+
+  theme_classic()+
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=20),
+    axis.text.x =element_text(size=20),
+        axis.text.y =element_text(size=20),
+        axis.title = element_text(size=20),
+    legend.position="none")#+
+  #annotate(geom="label",x=0.2,y=150, label="Higher in Females")+
+  #annotate(geom="label",x=-0.2,y=150, label="Higher in Males")
+png(paste0(imagesdir,"/PaperManuscript/sidebsidebox_logFC.png"),width=9,height=7,units = "in",res=800)
+topprobehist
+dev.off()
+
+
+#######################
+#Top Probe 2
+#######################
+betastopprobe2 <- betanogapnoXY_9["cg26921482",]
+sexvals2 <- analysisdat %>% select(MethID,cm1bsex)
+sexvals2$betas <- betastopprobe2
+
+topprobe2hist <- ggplot(data=sexvals2, aes(x=factor(cm1bsex),y=betas, fill=as.factor(cm1bsex)))+
+  geom_boxplot()+
+  scale_x_discrete(labels=c("Males","Females"))+
+  #scale_color_brewer(palette="Accent")+
+  scale_fill_manual(labels=c("Males","Females"),values = c("Female" = "#377EB8", "Male" = "#984EA3"))+
+  #xlim(-0.3,0.3)+
+  #ylim(0,300)+
+  ylab("Beta Values")+
+  xlab("")+
+  #ylab("-log10 p-value")+
+  theme_classic()+
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=20),
+    axis.text.x =element_text(size=20),
+        axis.text.y =element_text(size=20),
+        axis.title = element_text(size=20),
+    legend.position="none")#+ 
+topprobe2hist
+```
+
+
+
+Compare to results from Moore et al., 2020
+```{r compare_Moore}
+moore<- readxl::read_xlsx(paste0(datadir,"/12864_2020_6789_MOESM5_ESM (1).xlsx"))
+
+#rename first col
+colnames(moore)[1] <-"probe_id"
+
+#what # of probes found sig in Moore were also in our sig list at age 9
+sum(moore$probe_id %in% age9sigSEBR$probe_id)
+
+length(intersect(moore$probe_id,age9sigSEBR$probe_id))
+
+#2476 probes in common 
+
+library(tidyverse)
+#filter to these probes
+moore_sig <- moore %>% filter(probe_id %in%age9sigSEBR$probe_id)
+
+
+####At age 15?
+length(intersect(moore$probe_id,age15sigSEBR$probe_id)) #2470 in common at age 15
+
+
+###Find correlation between effect sizes of the 5273 sig sites
+#make combined dataset for hits
+mergypoo <- left_join(moore%>%select(probe_id,logFC),TopHits_SEBR_full %>% select(probe_id,logFC), by="probe_id")
+mergypoo <- mergypoo %>% rename("MooreSalivaEffect"="logFC.x",
+                            "OurSalivaEffect"="logFC.y")
+sum(is.na(mergypoo$MooreSalivaEffect))
+sum(is.na(mergypoo$OurSalivaEffect)) #1885 of their sig probes were not tested in our analysis
+
+cor(mergypoo$MooreSalivaEffect, mergypoo$OurSalivaEffect, method="spearman", use="complete.obs")
+
+
+#get just probes ntested in both analyses
+mergypo_tested <- mergypoo %>% filter(!is.na(OurSalivaEffect))
+
+#the sites that were not signiifcant in both analyses out of the tested sites
+mergypo_tested_ex <- mergypo_tested %>% filter(!probe_id %in% moore_sig$probe_id)
+
+sum(sign(mergypo_tested_ex$MooreSalivaEffect)==sign(mergypo_tested_ex$OurSalivaEffect)) #50/912 probes have the same direction of effect
+
+#plot and correlation of moore saliva effects and our saliva effects
+plot(mergypo_tested_ex$MooreSalivaEffect,mergypo_tested_ex$OurSalivaEffect)
+cor(mergypo_tested_ex$MooreSalivaEffect,mergypo_tested_ex$OurSalivaEffect, method="spearman")
+
+```
+
+
+Obtain Table 2 male vs female average beta values
+```{r avg-beta-by-sex}
+# get MethIDs of boys
+boyid <- analysisdat %>%
+  filter(cm1bsex==1)%>%
+  select(MethID)
+boyID <- c(boyid$MethID)
+
+#Get methIDs of girls
+girlid <- analysisdat %>%
+  filter(cm1bsex==2)%>%
+  select(MethID)
+girlID <- c(girlid$MethID)
+
+#create new betas by males anf female for only the probes we want to plot
+betaboy <- betanogapnoXY_9[,match(boyID,colnames(betanogapnoXY_9))]
+betagirl <- betanogapnoXY_9[,match(girlID,colnames(betanogapnoXY_9))]
+
+
+#now calc rowMeans
+boybeta<- rowMeans(betaboy)
+girlbeta<- rowMeans(betagirl)
+
+#create new dataframe with probe, male mean, female mean, p-value
+avgbetabysex_1 <- data.frame(
+  probe =rownames(betaboy),
+  malemean=boybeta,
+  femalemean=girlbeta
+)
+
+#check final table 2 probes
+fintab <- read_csv("/home/alreiner/Projects/ffcw/output/BlockProbeResults/tab2outputage9sig.csv")
+
+#filter the male /fem averages to just needed probes
+avgbetabysex_1 <- avgbetabysex_1 %>% filter(probe %in% fintab$probe_id)
+#order in same order as current table 2
+avgbetabysex_1 <- avgbetabysex_1[match(fintab$probe_id,avgbetabysex_1$probe),]
+avgbetabysex_1 <- avgbetabysex_1 %>% mutate(malemean=round(malemean,3),
+                                            femalemean=round(femalemean,3))
+
+write.table(avgbetabysex_1,file="/home/alreiner/Projects/ffcw/output/BlockProbeResults/tbl2maleVfemBeta_SEBR.txt",row.names = F)
+```
+
+
+SEBR sensitivity analyses tables
+```{r sensitivity-models}
+###################Detroit city variable
+#Get SAND indicator variable
+SANDind <- read.csv("/nfs/turbo/bakulski1/People/alreiner/insand.csv")
+SANDidnums <- c(SANDind$idnum)
+
+#Age 9 add city indicator
+analysisdat <- analysisdat %>%
+  mutate(m1city_DetToled = ifelse(m1city==4 |m1city==17,"Yes","No"),
+         SAND=ifelse(id %in% SANDidnums, "Yes","No"))
+table(analysisdat$SAND)
+table(analysisdat$m1city_DetToled)
+
+#get table 1 SAND counts
+analysisdat %>% group_by(cm1bsex)%>%
+  count(factor(SAND))
+
+```
+
+Miami plot
+```{r miami-plot}
+#see miamiggplot.R 
+#change input based on sample updates!!
+```
+
+Cpg enrichment across island regions (9 vs 15)
+```{r island-enrichment}
+#see enrichmenty.R script
+
+```
+
+Cell type PCA plots
+```{r pca-cell-type}
+
+analysisdatPC <- readRDS("/home/alreiner/Projects/ffcw/data/age9final_PC_796.rds")
+
+#need PCs attached to age 9 data
+#see PCAplots.R (lines 129-146)
+hist(analysisdat$Leukocytes)
+analysisdatPC$Leukcat = cut(analysisdatPC$Leukocytes, c(0,0.5,0.8,
+max(analysisdatPC$Leukocytes, na.rm = T)), right=T, labels=c("0-0.5","0.5-0.8","0.8-1.0"))
+sum(is.na(analysisdatPC$Leukcat))
+cbp1 <- c("#999999", "#E69F00", "#56B4E9")
+
+#PC1 vs PC2 upCTP
+png(paste0(imagesdir,"/PaperManuscript/IC_pca_lr.png"),width=11,height=7,units = "in",res=150)
+ggplot(analysisdatPC, aes(x = PC1, y = PC2, colour =Leukcat)) +
+  geom_point() +
+  labs(color = "Immune Cell Proportion") +
+  xlab("PC1")+
+  ylab("PC2")+
+  theme_classic()+
+  theme(axis.text = element_text(size = 27),
+        axis.title = element_text(size = 30),
+        legend.text = element_text(size = 22),
+        legend.title = element_text(size = 22))+
+  scale_colour_discrete(labels = c("0-0.5","0.5-0.8","0.8-1.0"))+ scale_colour_manual(values=cbp1)
+dev.off()
+
+
+analysisdat15$Leukcat = cut(analysisdat15$Leukocytes, c(0,0.5,0.8,
+max(analysisdat15$Leukocytes, na.rm = T)), right=T, labels=c(c("0-0.5","0.5-0.8","0.8-1.0")))
+sum(is.na(analysisdat15$Leukcat))
+
+#PC1 vs PC2 upCTP
+ggplot(analysisdat15, aes(x = PC1, y = PC2, colour =Leukcat)) +
+  geom_point() +
+  labs(color = "Immune Cell Proportion") +
+  xlab("PC1")+
+  ylab("PC2")+
+  theme_classic()+
+  theme(text = element_text(size = 20))+
+  scale_colour_discrete(labels = c("0-0.5","0.5-0.8","0.8-1.0"))+ scale_colour_manual(values=cbp1)
+#Age 9 and 15
+#PC association with covariates found in
+# PCAplots.R script in /home/alreiner/Projects/ffcw/analyses/PCAplots.R
+
+#Is the majority immune cell, small amount of epi cells the same at age 15
+analysisdat15 %>% summarise(meanIc=mean(Leukocytes),
+                            medIC=median(Leukocytes)) #mean = 92.5% ICs age 15
+analysisdat %>% summarise(meanIc=mean(Leukocytes),
+                            medIC=median(Leukocytes)) #mean=95.5% ICs age 9
+
+#subset to children that have both age 9 and age 15 data
+analysisdatfilt <- analysisdat %>% filter(id %in% analysisdat15$idnum) %>% arrange(analysisdat15$idnum)
+plot(analysisdatfilt$Leukocytes, analysisdat15$Leukocytes)
+#no correl between cell type proportion at age 9 comp to age 15 (as expected)
+```
+
+
+Further PCA plots: race/ethnicity
+```{r pca-race}
+
+#by race
+pairs(analysisdatPC[, c("PC1","PC2","PC3","PC4","PC5","PC6")], col = as.factor(analysisdatPC$cm1ethrace)) 
+pairs(analysisdatPC[, c("PC1","PC2","PC3","PC4","PC5","PC6")], col = as.factor(analysisdatPC$Leukcat)) 
+pairs(analysisdatPC[, c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")], col = as.factor(analysisdatPC$cm1bsex)) 
+
+pairs(analysisdatPC[, c("PC1","PC2","PC3","PC4","PC5","PC6")], col = as.factor(analysisdatPC$Sample_Plate)) 
+
+#age 9 
+png(paste0(imagesdir,"/PaperManuscript/race_pca_lr.png"),width=11,height=7,units = "in",res=150)
+ggplot(analysisdatPC, aes(x = PC5, y = PC2, colour =factor(cm1ethrace))) +
+  geom_point() +
+  labs(color = "Mother's Race/Ethnicity") +
+  xlab("PC5")+
+  ylab("PC2")+
+  theme_classic()+
+  theme(axis.text = element_text(size = 27),
+        axis.title = element_text(size = 30),
+        legend.text = element_text(size = 22),
+        legend.title = element_text(size = 22))+
+  scale_colour_discrete(labels = c("White, Non-Hispanic","Black, Non-Hispanic","Hispanic","Other"))#+ 
+  #scale_colour_manual(values=cbp1)
+dev.off()
+
+#age 9 : Sample Plate
+png(paste0(imagesdir,"/PaperManuscript/plate_pca_lr.png"),width=11,height=8,units = "in",res=150)
+ggplot(analysisdatPC, aes(x = PC1, y = PC2, colour =factor(Sample_Plate))) +
+  geom_point() +
+  labs(color = "Sample Plate") +
+  xlab("PC1")+
+  ylab("PC2")+
+  theme_classic()+
+  theme(
+        axis.text = element_text(size = 27),
+        axis.title = element_text(size = 30),
+        legend.text = element_text(size = 22),
+        legend.title = element_text(size = 22))
+dev.off()
+
+#create variable for plate 12 vs not
+analysisdatPC <- analysisdatPC %>% mutate(Plate12=ifelse(Sample_Plate==12,"Yes","No"),
+                                          povCAT=ifelse(cm1inpov < 1, "In Poverty","Not in Poverty"
+                                                        ))
+
+#age 9 : Sample Plate
+png(paste0(imagesdir,"/PaperManuscript/plate12_pca_lr.png"),width=9,height=9,units = "in",res=150)
+ggplot(analysisdatPC, aes(x = PC1, y = PC2, colour =factor(Plate12))) +
+  geom_point() +
+  labs(color = "On Plate 12") +
+  xlab("PC1")+
+  ylab("PC2")+
+  theme_classic()+
+   theme(axis.text = element_text(size = 27),
+        axis.title = element_text(size = 30),
+        legend.text = element_text(size = 22),
+        legend.title = element_text(size = 22),
+        legend.position = "bottom")
+dev.off()
+
+#age 15
+ggplot(analysisdat15, aes(x = PC5, y = PC6, colour =factor(cm1ethrace))) +
+  geom_point() +
+  labs(color = "Mother's Race/Ethnicity") +
+  xlab("PC1")+
+  ylab("PC2")+
+  theme_classic()+
+  theme(text = element_text(size = 23),
+        legend.position = "none")+
+  scale_colour_discrete(labels = c("White, Non-Hispanic","Black, Non-Hispanic","Hispanic","Other"))#+ 
+  #scale_colour_manual(values=cbp1)
+
+#Age 9 sex association
+png(paste0(imagesdir,"/PaperManuscript/sex_pca_lr.png"),width=11,height=8,units = "in",res=150)
+ggplot(analysisdatPC, aes(x = PC7, y = PC8, colour =factor(cm1bsex))) +
+  geom_point() +
+  labs(color = "Child's Sex") +
+  xlab("PC7")+
+  ylab("PC8")+
+  theme_classic()+
+  theme(
+        axis.text = element_text(size = 27),
+        axis.title = element_text(size = 30),
+        legend.text = element_text(size = 22),
+        legend.title = element_text(size = 22))+
+  scale_colour_discrete(labels = c("Male","Female"))
+dev.off()
+
+```
+
+PCA assocations
+```{r pca-associations}
+#poverty ratio, mothers self-reported race/ethnicity, mothers education, mothers health status, and mothers smoking #status  all at baseline  and age in months and BMI at age 9
+
+
+#Make BMI and age category
+
+#Check p-values for results section 
+aov_PC_Leuk = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), function(x) aov(analysisdatPC[,x]~analysisdatPC$Leukocytes))
+
+summs_aovLeuk = lapply(aov_PC_Leuk,summary)
+
+pvals_aovLeuk = lapply(summs_aovLeuk, function(x) x[[1]][[5]][[1]])
+
+aov_PC_Leuk_lm = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), function(x) lm(analysisdatPC[,x]~analysisdatPC$Leukocytes))
+
+summs_aovLeuk_lm = lapply(aov_PC_Leuk_lm,summary)
+
+pvals_aovLeuk_lm = lapply(summs_aovLeuk_lm, function(x) x[[4]][[8]])
+
+#batch age 9
+aov_PC_bat9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), function(x) 
+  aov(analysisdatPC[,x]~as.factor(analysisdatPC$batch)))
+
+summs_aovbat9 = lapply(aov_PC_bat9,summary)
+
+pvals_aovPCbat9 = lapply(summs_aovbat9, function(x) x[[1]][[5]][[1]])
+
+#same process for mom race
+aov_PC_race9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                     function(x) aov(analysisdatPC[,x]~as.factor(analysisdatPC$cm1ethrace)))
+
+summs_aovrace9 = lapply(aov_PC_race9,summary)
+
+pvals_aovPCrace9 = lapply(summs_aovrace9, function(x) x[[1]][[5]][[1]])
+
+#PCs 1-10 by sex
+aov_PC_sex9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                    function(x) aov(analysisdatPC[,x]~as.factor(analysisdatPC$cm1bsex)))
+
+summs_aovPC_sex9 = lapply(aov_PC_sex9,summary)
+
+#summs_aovPC[[1]][[1]]$`Pr(>F)`
+
+pvals_aovPC_sex9 = lapply(summs_aovPC_sex9, function(x) x[[1]][[5]][[1]])
+
+
+#Variables of interest that did not make the cut
+#PCs 1-10 by mom education
+aov_PC_edu9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                    function(x) aov(analysisdatPC[,x]~as.factor(analysisdatPC$cm1edu)))
+
+summs_aovPC_edu9 = lapply(aov_PC_edu9,summary)
+
+pvals_aovPC_edu9 = lapply(summs_aovPC_edu9, function(x) x[[1]][[5]][[1]])
+
+#PCs 1-10 by mom health status
+aov_PC_hs9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                    function(x) aov(analysisdatPC[,x]~as.factor(analysisdatPC$m1g1)))
+
+summs_aovPC_hs9 = lapply(aov_PC_hs9,summary)
+
+pvals_aovPC_hs9 = lapply(summs_aovPC_hs9, function(x) x[[1]][[5]][[1]])
+
+#PCs 1-10 by mom smoke status
+aov_PC_smk9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                    function(x) aov(analysisdatPC[,x]~as.factor(analysisdatPC$m1g4)))
+
+summs_aovPC_smk9 = lapply(aov_PC_smk9,summary)
+
+pvals_aovPC_smk9 = lapply(summs_aovPC_smk9, function(x) x[[1]][[5]][[1]])
+
+#pov ratio
+aov_PC_pov9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                    function(x) aov(analysisdatPC[,x]~as.factor(analysisdatPC$povCAT)))
+
+summs_aovPC_pov9 = lapply(aov_PC_pov9,summary)
+
+pvals_aovPC_pov9 = lapply(summs_aovPC_pov9, function(x) x[[1]][[5]][[1]]) #p<0.05 for PC5
+#PC5 and pov assoc is p=8.4E-8
+
+#BMI age 9
+hist(analysisdatPC$hv5_cbmi)
+aov_PC_bmi9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                    function(x) lm(analysisdatPC[,x]~analysisdatPC$hv5_cbmi))
+
+summs_aovPC_bmi9 = lapply(aov_PC_bmi9,summary)
+
+pvals_aovPC_bmi9 = lapply(summs_aovPC_bmi9, function(x) x[[4]][[8]]) #p=0.049 for PC1, not adding for now...(not p < 0.05)
+#BMI PC1 p value = 0.0492...adjust in sensitivity??
+
+#Age age 9
+hist(analysisdatPC$hv5_cbmi)
+aov_PC_age9 = lapply(colnames(analysisdatPC[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10")]), 
+                    function(x) lm(analysisdatPC[,x]~analysisdatPC$hv5_agem))
+
+summs_aovPC_age9 = lapply(aov_PC_age9,summary)
+
+pvals_aovPC_age9 = lapply(summs_aovPC_age9, function(x) x[[4]][[8]]) #p=0.0004 for PC4
+
+
+##########################################################More efficient function to do all the tests above
+varlist9PC <- data.frame(analysisdatPC$Leukocytes,analysisdatPC$Sample_Plate,analysisdatPC$cm1ethrace,analysisdatPC$Epithelial.cells, analysisdatPC$cm1bsex, analysisdatPC$cm1inpov,analysisdatPC$cm1edu,analysisdatPC$m1g1,analysisdatPC$m1g4,analysisdatPC$hv5_cbmi,analysisdatPC$hv5_mbmi )
+
+#edu, health status, smoking status, bmi mom, bmi child
+
+age9finPC_test <- analysisdatPC %>% dplyr::select(PC1,PC2,PC3,PC4,PC5)
+
+
+for(i in 1:ncol(age9finPC_test)){
+  for (j in 1:ncol(varlist9PC)){
+
+column <- names(age9finPC_test[i])
+row <- names(varlist9PC[j])
+#tidy will summarise and return neat format
+avz <- broom::tidy(aov(age9finPC_test[,i] ~ varlist9PC[,j], data = age9finPC_test))
+
+# Add this condition if you only want aov with P < 0.05 printed
+#if(avz$p.value[1] < 0.05) {
+
+  print(c(column,row))
+  print(avz$p.value[1])
+ #}
+}
+}
+```
+
+PCA associations age 15
+```{r}
+
+#load in age 15 pc DATA
+age15finPC <- readRDS("/home/alreiner/Projects/ffcw/data/age15final_PC_796.rds")
+
+#amerge the other covariates of interest
+
+age15finPC <- left_join(age15finPC %>% mutate(idnum=as.character(idnum)), analysisdat %>% select(id,MethID,cm1edu,hv5_cbmi,hv5_mbmi,m1g1,m1g4),by=c("idnum"="id"))
+
+#ensure the join worked
+all.equal(age15finPC_see$cm1edu, analysisdat$cm1edu)
+sum(is.na(age15finPC_see$cm1edu))
+sum(is.na(analysisdat$cm1edu))
+#View(age15finPC_see %>% select(idnum,cm1edu))
+#View(analysisdat %>% select(id,cm1edu)) #same 8 id's had missing values for cm1edu
+
+#mAKE CATEGORICAL versions of variables of interest
+age15finPC$Leukcat = cut(age15finPC$Leukocytes, c(0,0.5,0.8,
+max(age15finPC$Leukocytes, na.rm = T)), right=T, labels=c(c("0-0.5","0.5-0.8","0.8-1.0")))
+sum(is.na(age15finPC$Leukcat))
+
+
+#Check p-values for results section 
+
+######################################################################
+#Efficient way of checking p values
+##################
+varlist15PC <- data.frame(age15finPC$Leukocytes,age15finPC$Sample_Plate,age15finPC$cm1ethrace,age15finPC$Epithelial.cells, age15finPC$cm1bsex, age15finPC$cm1inpov,age15finPC$cm1edu,age15finPC$m1g1,age15finPC$m1g4,age15finPC$hv5_cbmi,age15finPC$hv5_mbmi )
+
+#edu, health status, smoking status, bmi mom, bmi child
+
+age15finPC_test <- age15finPC %>% dplyr::select(PC1,PC2,PC3,PC4,PC5)
+
+
+for(i in 1:ncol(age15finPC_test)){
+  for (j in 1:ncol(varlist15PC)){
+
+column <- names(age15finPC_test[i])
+row <- names(varlist15PC[j])
+#tidy will summarise and return neat format
+avz <- broom::tidy(aov(age15finPC_test[,i] ~ varlist15PC[,j], data = age15finPC_test))
+
+# Add this condition if you only want aov with P < 0.05 printed
+#if(avz$p.value[1] < 0.05) {
+
+  print(c(column,row))
+  print(avz$p.value[1])
+ #}
+}
+}
+```
+
+
+Location of age 9 vs age 15 DMPs across genome
+```{r ideogram}
+
+#Age9
+mani <- ewastools:::manifest_450K
+assign(paste0("sigprobsSEBR9", nrow(age9sigSEBR)), mani %>% filter(probe_id %in% rownames(age9sigSEBR))%>%select(mapinfo,chr))
+
+#write file to ideogram folder
+write.csv(get(paste0("sigprobsSEBR9", nrow(age9sigSEBR))), file=paste0("/home/alreiner/Projects/ffcw/images/Ideogram/sigprobsSEBR9_",nrow(age9sigSEBR),".csv"), row.names = F)
+
+#Age 15
+assign(paste0("sigprobsSEBR15", nrow(age15sigSEBR)), mani %>% filter(probe_id %in% rownames(age15sigSEBR))%>%select(mapinfo,chr))
+
+#write file to ideogram folder
+write.csv(get(paste0("sigprobsSEBR15", nrow(age15sigSEBR))), file=paste0("/home/alreiner/Projects/ffcw/images/Ideogram/sigprobsSEBR15_",nrow(age15sigSEBR),".csv"), row.names = F)
+```
+
+
+eFORGE input for age 9 vs 15
+```{r}
+#Age 9
+#get list of top 1000 most sig probes for EFORGE
+View(age9sigSEBR[order(age9sigSEBR$P.Value),])
+orderedsig <- age9sigSEBR[order(age9sigSEBR$P.Value),]
+orderedsig <- orderedsig[1:1000,]
+age9top1k <-orderedsig %>%rownames()
+write.table(age9top1k,paste0("/home/alreiner/Projects/ffcw/output/SigProbes/age9top1k_",nrow(age9sigSEBR),"_SEBR.txt"),row.names = F)
+
+#Age 9 female-biased
+sigprobs_f_SEBR9 <- age9sigSEBR %>% filter(logFC>0)%>%arrange(P.Value)%>%rownames() # female biased (9)
+write.table(sigprobs_f_SEBR9,"/home/alreiner/Projects/ffcw/output/SigProbes/sigprobs_f_SEBR9.txt",row.names = F)
+
+#Age 9 male-biased
+#sigprobs_m_SEBR9ord <- age9sigSEBR %>% filter(logFC<0)%>%arrange(P.Value)
+sigprobs_m_SEBR9 <- age9sigSEBR %>% filter(logFC<0)%>%arrange(P.Value)%>%rownames() # female biased (9)
+write.table(sigprobs_m_SEBR9,"/home/alreiner/Projects/ffcw/output/SigProbes/sigprobs_m_SEBR9.txt",row.names = F)
+
+#Age 15
+#get list of top 1000 most sig probes for EFORGE
+View(age15sigSEBR[order(age15sigSEBR$P.Value),])
+orderedsig15 <- age15sigSEBR[order(age15sigSEBR$P.Value),]
+orderedsig15 <- orderedsig15[1:1000,]
+age15top1k <-orderedsig15 %>%rownames()
+write.table(age15top1k,paste0("/home/alreiner/Projects/ffcw/output/SigProbes/age15top1k_",nrow(age15sigSEBR),"_SEBR.txt"),row.names = F)
+```
+
+DMP GO Term Enrichment
+```{r dmp-goterms-9}
+###single site DMP gene set enrichment
+#OVERALL!!!
+BiocManager::install('DOSE')
+library(DOSE)
+data(geneList)
+
+#Overall enrichment test
+enrich_DMP9_overall <- gometh(sig.cpg=rownames(age9sigSEBR) ,
+                     all.cpg=rownames(betanogapnoXY_9),
+                     collection="GO",
+                     plot.bias=T,
+                     prior.prob=T,
+                     sig.genes=T
+                     )
+enrich_DMP9_overall <- enrich_DMP9_overall[order(enrich_DMP9_overall$P.DE),]
+enrich_DMP9_overall$RATIO <- enrich_DMP9_overall$DE/enrich_DMP9_overall$N
+fmt_scientific(gt(data=enrich_DMP9_overall[1:10,2:6]),columns=c("P.DE","FDR"),decimals = 2)
+
+saveRDS(enrich_DMP9_overall, file="/home/alreiner/Projects/ffcw/output/DMP_goterms_overall.rds")
+
+# plot: dot plot
+ggplot(data = enrich_DMP9_overall[1:30,], aes(x = RATIO, y = TERM, 
+                        color = `FDR`, size = DE)) + 
+  geom_point() +
+  scale_color_gradient(low = "red", high = "blue") +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("GO enrichment analysis")
+
+
+#get rid of redundancy with REVIGO
+#need a list of the GO terms
+enrich_DMP_filt_overall <- enrich_DMP9_overall %>% mutate(GOID = rownames(enrich_DMP9_overall))%>% 
+  #filter(FDR<0.05)%>% 
+  select(GOID,P.DE)
+write.table(enrich_DMP_filt_overall, file = "/home/alreiner/Projects/ffcw/output/DMP_goterms_overall.txt", sep = " ",row.names = F)
+
+#saveRDS(enrich_DMP9_male, file="/home/alreiner/Projects/ffcw/output/DMP_goterms_malebiased.rds")
+
+####################
+
+
+#create list of only male biased probes
+sigprobs_m_SEBR9 <- age9sigSEBR %>% filter(logFC<0)%>%rownames() # 1354 male biased age 9
+
+#femaleprobs <- 
+  
+#Male enriched probes only (age9)
+enrich_DMP9_male <- gometh(sig.cpg=sigprobs_m_SEBR9 ,
+                     all.cpg=rownames(betanogapnoXY_9),
+                     collection="GO",
+                     plot.bias=T,
+                     prior.prob=T,
+                     sig.genes=T
+                     )
+enrich_DMP9_male <- enrich_DMP9_male[order(enrich_DMP9_male$P.DE),]
+fmt_scientific(gt(data=enrich_DMP9_male[1:10,2:6]),columns=c("P.DE","FDR"),decimals = 2)
+
+#filter to FDR < 0.05
+nrow(enrich_DMP9_male %>% filter(FDR<0.05)) #0 go terms at FDR<= 0.05
+
+#get rid of redundancy with REVIGO
+#need a list of the GO terms
+enrich_DMP_filt_male <- enrich_DMP9_male %>% mutate(GOID = rownames(enrich_DMP9_male))%>% 
+  #filter(FDR<0.05)%>% 
+  select(GOID,P.DE)
+#topGO_DMP <- c(enrich_DMP_filt$TERM)
+#View(topGO_DMP)
+write.table(enrich_DMP_filt_male, file = "/home/alreiner/Projects/ffcw/output/DMP_goterms_malebiased.txt", sep = " ",row.names = F)
+
+saveRDS(enrich_DMP9_male, file="/home/alreiner/Projects/ffcw/output/DMP_goterms_malebiased.rds")
+
+#########################
+#Female biased probes
+
+sigprobs_f_SEBR9 <- age9sigSEBR %>% filter(logFC>0)%>%rownames() # female biased (9)
+#Male enriched probes only (age9)
+enrich_DMP9_female <- gometh(sig.cpg=sigprobs_f_SEBR9 ,
+                     all.cpg=rownames(betanogapnoXY_9),
+                     collection="GO",
+                     plot.bias=T,
+                     prior.prob=T, #account for prob of sig differential methylation due to number of probes per gene
+                     sig.genes=T
+                     )
+enrich_DMP9_female <- enrich_DMP9_female[order(enrich_DMP9_female$P.DE),]
+fmt_scientific(gt(data=enrich_DMP9_female[1:10,2:6]),columns=c("P.DE","FDR"),decimals = 2)
+
+#filter to FDR < 0.05
+nrow(enrich_DMP9_female %>% filter(FDR<0.05)) #13 go terms at FDR<= 0.05
+
+#get rid of redundancy with REVIGO
+#need a list of the GO terms
+enrich_DMP_filt_fem <- enrich_DMP9_female %>% mutate(GOID = rownames(enrich_DMP9_female))%>% 
+  filter(FDR<0.05)%>% 
+  select(GOID,FDR)
+#topGO_DMP <- c(enrich_DMP_filt$TERM)
+#View(topGO_DMP)
+
+enrich_DMP_filt_femaleb <- enrich_DMP9_female %>% mutate(GOID = rownames(enrich_DMP9_female))
+saveRDS(enrich_DMP_filt_femaleb, file="/home/alreiner/Projects/ffcw/output/DMP_goterms_fembiased.rds")
+
+write.table(enrich_DMP_filt_fem, file = "/home/alreiner/Projects/ffcw/output/DMP_goterms_fembiased.txt", sep = " ",row.names = F)
+
+```
+
+
+```{r dmp-goterms-15}
+###single site DMP gene set enrichment
+#OVERALL!!!
+
+#Overall enrichment test
+# enrich_DMP15_overall <- gometh(sig.cpg=rownames(age15sigSEBR) ,
+#                      all.cpg=rownames(betanogapnoXY_15),
+#                      collection="GO",
+#                      plot.bias=T,
+#                      prior.prob=T,
+#                      sig.genes=T
+#                      )
+# enrich_DMP15_overall <- enrich_DMP15_overall[order(enrich_DMP15_overall$P.DE),]
+# enrich_DMP15_overall$RATIO <- enrich_DMP15_overall$DE/enrich_DMP15_overall$N
+# fmt_scientific(gt(data=enrich_DMP15_overall[1:10,2:6]),columns=c("P.DE","FDR"),decimals = 2)
+# 
+# saveRDS(enrich_DMP15_overall, file="/home/alreiner/Projects/ffcw/output/DMP_goterms_overall15.rds")
+
+#create list of only male biased probes
+sigprobs_m_SEBR9 <- age9sigSEBR %>% filter(logFC<0)%>%rownames() # 1354 male biased age 9
+
+#femaleprobs <- 
+  
+#Male enriched probes only (age9)
+enrich_DMP9_male <- gometh(sig.cpg=sigprobs_m_SEBR9 ,
+                     all.cpg=rownames(betanogapnoXY_9),
+                     collection="GO",
+                     plot.bias=T,
+                     prior.prob=T,
+                     sig.genes=T
+                     )
+enrich_DMP9_male <- enrich_DMP9_male[order(enrich_DMP9_male$P.DE),]
+fmt_scientific(gt(data=enrich_DMP9_male[1:10,2:6]),columns=c("P.DE","FDR"),decimals = 2)
+
+#filter to FDR < 0.05
+nrow(enrich_DMP9_male %>% filter(FDR<0.05)) #0 go terms at FDR<= 0.05
+
+#get rid of redundancy with REVIGO
+#need a list of the GO terms
+enrich_DMP_filt_male <- enrich_DMP9_male %>% mutate(GOID = rownames(enrich_DMP9_male))%>% 
+  #filter(FDR<0.05)%>% 
+  select(GOID,P.DE)
+#topGO_DMP <- c(enrich_DMP_filt$TERM)
+#View(topGO_DMP)
+write.table(enrich_DMP_filt_male, file = "/home/alreiner/Projects/ffcw/output/DMP_goterms_malebiased.txt", sep = " ",row.names = F)
+
+saveRDS(enrich_DMP9_male, file="/home/alreiner/Projects/ffcw/output/DMP_goterms_malebiased.rds")
+
+#########################
+#Female biased probes
+
+sigprobs_f_SEBR9 <- age9sigSEBR %>% filter(logFC>0)%>%rownames() # female biased (9)
+#Male enriched probes only (age9)
+enrich_DMP9_female <- gometh(sig.cpg=sigprobs_f_SEBR9 ,
+                     all.cpg=rownames(betanogapnoXY_9),
+                     collection="GO",
+                     plot.bias=T,
+                     prior.prob=T, #account for prob of sig differential methylation due to number of probes per gene
+                     sig.genes=T
+                     )
+enrich_DMP9_female <- enrich_DMP9_female[order(enrich_DMP9_female$P.DE),]
+fmt_scientific(gt(data=enrich_DMP9_female[1:10,2:6]),columns=c("P.DE","FDR"),decimals = 2)
+
+#filter to FDR < 0.05
+nrow(enrich_DMP9_female %>% filter(FDR<0.05)) #13 go terms at FDR<= 0.05
+
+
+```
+
+DMP GO terms
+```{r goterms-dmp}
+dmpmales <- readRDS(file="/home/alreiner/Projects/ffcw/output/DMP_goterms_malebiased.rds")
+dmpfems <- readRDS(file="/home/alreiner/Projects/ffcw/output/DMP_goterms_fembiased.rds")
+```
+
+DMR Overlapping Genes Table &GO terms (age 9 and 15)
+```{r DMR-results}
+#age 9: DMRcate_age9_updatedCTP.R [checked over 12/27]
+
+# age 15: 15yo/DMRcate_15.R [checked over 12/27]
+
+age9fdr1 <- readRDS("/home/alreiner/Projects/ffcw/output/DMR/DMR_results_247_SEBP_upCTP.rds")
+age9fdr0.05 <- readRDS("/home/alreiner/Projects/ffcw/output/DMR/DMR_results_247_SEBP_upCTP_FDR0.05.rds")
+
+#count of DMRS that are hypermethylated ni females
+sum(age9fdr1$meandiff>0)
+
+
+#matt's comment: any DMRs driven by a strong effect at a single probe?
+View(age9fdr1 %>% filter(abs(maxdiff-meandiff)>0.05))
+#17 probes have a maxdiff-meandiff value above |0.05|
+
+outliers <- age9fdr1 %>% filter(abs(maxdiff-meandiff)>0.05)
+saveRDS(outliers, file="/home/alreiner/Projects/ffcw/output/DMR/DMRlistwLGeffectProbe.rds")
+
+#Check the number of sites in each DMR that were hypermethylated in females vs males
+#dmrcoutput <- readRDS("/home/alreiner/Projects/ffcw/output/DMR/DMRoutput_fdr1.rds")
+#Get individual cpgs in each dmr
+mani_sig <- mani %>% filter(probe_id %in% age9sigSEBR$probe_id)
+
+#See which of sig probes fall in each DMR region
+mani_sig <- mani_sig %>% mutate(InDMR1 = ifelse(between(mapinfo,age9fdr1$start[1],age9fdr1$end[1]),probe_id,NA),
+                                InDMR2 = ifelse(between(mapinfo,age9fdr1$start[2],age9fdr1$end[2]),probe_id,NA),
+                                InDMR3 = ifelse(between(mapinfo,age9fdr1$start[3],age9fdr1$end[3]),probe_id,NA),
+                                InDMR4 = ifelse(between(mapinfo,age9fdr1$start[4],age9fdr1$end[4]),probe_id,NA),
+                                InDMR5 = ifelse(between(mapinfo,age9fdr1$start[5],age9fdr1$end[5]),probe_id,NA),
+                                InDMR6 = ifelse(between(mapinfo,age9fdr1$start[6],age9fdr1$end[6]),probe_id,NA),
+                                InDMR7 = ifelse(between(mapinfo,age9fdr1$start[7],age9fdr1$end[7]),probe_id,NA),
+                                InDMR8 = ifelse(between(mapinfo,age9fdr1$start[8],age9fdr1$end[8]),probe_id,NA),
+                                InDMR9 = ifelse(between(mapinfo,age9fdr1$start[9],age9fdr1$end[9]),probe_id,NA),
+                                InDMR10 = ifelse(between(mapinfo,age9fdr1$start[10],age9fdr1$end[10]),probe_id,NA),
+                                InDMR11 = ifelse(between(mapinfo,age9fdr1$start[11],age9fdr1$end[11]),probe_id,NA),
+                                InDMR12 = ifelse(between(mapinfo,age9fdr1$start[12],age9fdr1$end[12]),probe_id,NA),
+                                InDMR13 = ifelse(between(mapinfo,age9fdr1$start[13],age9fdr1$end[13]),probe_id,NA),
+                                InDMR14= ifelse(between(mapinfo,age9fdr1$start[14],age9fdr1$end[14]),probe_id,NA),
+                                InDMR15 = ifelse(between(mapinfo,age9fdr1$start[15],age9fdr1$end[15]),probe_id,NA))
+                                                           
+
+
+dmr1_cts <- age9sigSEBR %>% filter(probe_id %in% mani_sig$InDMR10) %>% mutate(Positives=sum(logFC>0),
+                                                                             Negatives=sum(logFC<0))
+
+
+
+
+
+
+#check overlap of genes between 0.05 and 1 DMRs
+#get rid of NAs
+genessplit9_noNA <- na.omit(unlist(strsplit(fdr1, "[,]")))
+#trim whitespace
+#genessplit_noNA <- na.omit(unlist(strsplit(genes9, "[,]")))
+genessplit9_noNA <- trimws(genessplit9_noNA) #112
+#delete the double genes
+sum(duplicated(genessplit9_noNA)) #225 duplicates
+which(duplicated(genessplit9_noNA))
+genessplit9_noNA <- genessplit9_noNA[!duplicated(genessplit9_noNA)] #final list of genes for age 15
+
+#determine number ofCpgs contained in the DMRs
+sum(age9fdr1$no.cpgs)
+mean(age9fdr1$no.cpgs)
+mean(abs(age9fdr1$meandiff))
+
+#Calculate concordance of overlapping genes
+fdr1 <- age9fdr1$overlapping.genes
+fdr0.05 = age9fdr0.05$overlapping.genes
+sum(fdr1 %in% fdr0.05) #1409 of the 1499 are in the fdr of 0.05 results (93% overlap)
+#conclusion: use either threshold
+
+#GO term enrichment
+#get GO ontology terms associated with the DMRs
+enrichment_GO_2024 <- goregion(results.ranges_09, all.cpg = rownames(beta_nogap_noXYmani),
+                              collection = "GO", array.type = "450K",sig.genes = T)
+enrichment_GO_2024 <- enrichment_GO_2024[order(enrichment_GO_2024$P.DE),]
+#write.csv(enrichment_GO_2024, "/home/alreiner/Projects/ffcw/output/DMR/age9GO_results_2024input.csv")
+
+#Filter GO terms to biological processes only
+enrichment_GO_2024_bp<- enrichment_GO_2024[order(enrichment_GO_2024$P.DE),]%>%
+  filter(ONTOLOGY=="BP")
+#Further filter to FDR < 0.05
+enrichment_GO_2024sig_9_filtFDR <- enrichment_GO_2024_bp %>%
+  filter(FDR<0.05) %>%
+  arrange(FDR)%>%
+  mutate_at(vars(P.DE, FDR), funs(round(., 3)))
+#write.table(enrichment_GO_1717sig_15_filt, file="/home/alreiner/Projects/ffcw/analyses/15yo/DMR_1717_GoTerms_BP_11_24.txt",sep=',')
+write.csv(enrichment_GO_2024sig_9_filtFDR, "/home/alreiner/Projects/ffcw/output/DMR/age9GO_results_filtFDR.csv")
+
+
+###############################
+#Age 15
+###############################
+age15dmrs <- readRDS("/home/alreiner/Projects/ffcw/output/DMR/DMR_results_247_SEBR_15.rds")
+
+write.csv(age15dmrs,file="/home/alreiner/Projects/ffcw/output/DMR/DMR_results_247_SEBR_15.csv")
+
+
+#Check the number of sites in each DMR that were hypermethylated in females vs males
+#dmrcoutput <- readRDS("/home/alreiner/Projects/ffcw/output/DMR/DMRoutput_fdr1.rds")
+#Get individual cpgs in each dmr
+mani_sig15 <- mani %>% filter(probe_id %in% age15sigSEBR$probe_id)
+
+#See which of sig probes fall in each DMR region
+mani_sig15 <- mani_sig15 %>% mutate(InDMR1 = ifelse(between(mapinfo,age15dmrs$start[1],age15dmrs$end[1]),probe_id,NA),
+                                InDMR2 = ifelse(between(mapinfo,age15dmrs$start[2],age15dmrs$end[2]),probe_id,NA),
+                                InDMR3 = ifelse(between(mapinfo,age15dmrs$start[3],age15dmrs$end[3]),probe_id,NA),
+                                InDMR4 = ifelse(between(mapinfo,age15dmrs$start[4],age15dmrs$end[4]),probe_id,NA),
+                                InDMR5 = ifelse(between(mapinfo,age15dmrs$start[5],age15dmrs$end[5]),probe_id,NA),
+                                InDMR6 = ifelse(between(mapinfo,age15dmrs$start[6],age15dmrs$end[6]),probe_id,NA),
+                                InDMR7 = ifelse(between(mapinfo,age15dmrs$start[7],age15dmrs$end[7]),probe_id,NA),
+                                InDMR8 = ifelse(between(mapinfo,age15dmrs$start[8],age15dmrs$end[8]),probe_id,NA),
+                                InDMR9 = ifelse(between(mapinfo,age15dmrs$start[9],age15dmrs$end[9]),probe_id,NA),
+                                InDMR10 = ifelse(between(mapinfo,age15dmrs$start[10],age15dmrs$end[10]),probe_id,NA),
+                                InDMR11 = ifelse(between(mapinfo,age15dmrs$start[11],age15dmrs$end[11]),probe_id,NA),
+                                InDMR12 = ifelse(between(mapinfo,age15dmrs$start[12],age15dmrs$end[12]),probe_id,NA),
+                                InDMR13 = ifelse(between(mapinfo,age15dmrs$start[13],age15dmrs$end[13]),probe_id,NA),
+                                InDMR14= ifelse(between(mapinfo,age15dmrs$start[14],age15dmrs$end[14]),probe_id,NA),
+                                InDMR15 = ifelse(between(mapinfo,age15dmrs$start[15],age15dmrs$end[15]),probe_id,NA))
+                                                           
+
+
+dmr15_cts <- age15sigSEBR %>% filter(probe_id %in% mani_sig15$InDMR15) %>% mutate(Positives=sum(logFC>0),
+                                                                             Negatives=sum(logFC<0))
+
+
+fdr1_15 <- age15dmrs$overlapping.genes
+sum(fdr1 %in% fdr1_15)
+
+# #separate double genes into 2 sep elemts in a list
+genes_15_split <- unlist(strsplit(fdr1_15, "[,]"))
+print(genes_15_split)
+#get rid of NAs
+genessplit_noNA <- na.omit(unlist(strsplit(fdr1_15, "[,]")))
+print(genessplit_noNA)
+#trim whitespace
+#genessplit_noNA <- na.omit(unlist(strsplit(genes9, "[,]")))
+genessplit_noNA <- trimws(genessplit_noNA) #112
+print(genessplit_noNA)
+#delete the double genes
+sum(duplicated(genessplit_noNA)) #212 duplicates
+which(duplicated(genessplit_noNA))
+genessplit_noNA <- genessplit_noNA[!duplicated(genessplit_noNA)] #final list of genes for age 15
+
+
+#calcl overlap
+overlap_nums(genessplit_noNA,genessplit9_noNA)
+```
+
