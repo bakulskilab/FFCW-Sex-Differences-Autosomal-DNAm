@@ -1254,7 +1254,11 @@ sum(sign(mergyNOTrep2$logFC.x)==sign(mergyNOTrep2$logFC.y)) #902/999 probes have
 #check if our strongest signla sat age 9 are significant at age 15
 top100age9 <- age9sigSEBR[order(age9sigSEBR$P.Value),]
 top100age9 <- top100age9[1:419,]
+top100age9_1 <- top100age9[1:420,]
+View(top100age9[1:420,])
+
 sum(top100age9$probe_id %in% age15repprobes$probe_id) #all 419 of the top 419 probes at age 9 are replicated at age 15 (anything past 419 does not meet the criteria of ALL probes replicating)
+sum(top100age9_1$probe_id %in% age15repprobes$probe_id)
 
 #num of probes at age 15 at p=2.4 E -7 that are NOT in age 9 sig set
 sum(!rownames(age15sigSEBR) %in% rownames(age9sigSEBR)) #1845 probes

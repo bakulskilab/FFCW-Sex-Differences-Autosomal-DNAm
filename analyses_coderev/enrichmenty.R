@@ -129,17 +129,17 @@ zstat=(phat-pnot)/(sqrt((pnot*(1-pnot))/sampsiz))
 freqd9$island <- factor(freqd9$island, levels = c("N_Shelf","N_Shore","Island","S_Shore","S_Shelf","OpenSea"))
 
 #make bar plot of significant site distribution by CpG island region
-age9dist <- ggplot(data=freqd9, aes(x=island, y=value, fill=freq, label=scales::percent(value %>% round(3),accuracy=0.1)))+
+age9dist <- ggplot(data=freqd9, aes(x=island, y=value*100, fill=freq, label=scales::percent(value %>% round(3),accuracy=0.1)))+
   geom_bar(stat="identity", position="dodge")+ #dodge--puts bars side by side
   theme_classic()+
   theme(text= element_text(size=15),
         axis.text.y= element_text(size=18),
         axis.text.x= element_text(size=18),
         axis.title = element_text(size=22))+
-  ylab("Proportion of DNA Methylation Sites")+
+  ylab("Percentage of DNA Methylation Sites")+
   xlab("CpG Island Region")+
-  #scale_fill_discrete(name="Proportion of",labels=c("Significant sites", "Total sites"))+
-  scale_fill_manual(values=c("black","grey"),name="Proportion of DNA \n Methylation Sites",labels=c("Significantly different by sex", "All sites"))+
+  #scale_fill_discrete(name="Proportion of",labels=c("Significant sites", "Total sites"))+ #name=
+  scale_fill_manual(values=c("black","grey"),name="",labels=c("Differentially methylated sites", "All sites"))+
   scale_x_discrete(labels=c("Island" = "Island", "N_Shelf" = "North\nShelf",
                             "N_Shore" = "North\nShore", "OpenSea"="Open\nSea",
                             "S_Shelf"="South\nShelf","S_Shore"="South\nShore")) + 
@@ -150,6 +150,9 @@ age9dist <- ggplot(data=freqd9, aes(x=island, y=value, fill=freq, label=scales::
 age9dist
 png(paste0(imagesdir,"/enrich/enrichyplot_lr.png"),width=11,height=7,units = "in",res=150)
 png(paste0(imagesdir,"/enrich/enrichyplot.png"),width=11,height=7,units = "in",res=800)
+
+#jpeg(paste0(imagesdir,"/enrich/enrichyplot_lr.jpg"),width=11,height=7,units = "in",res=150)
+jpeg(paste0(imagesdir,"/enrich/enrichyplot.jpg"),width=11,height=7,units = "in",res=800)
 age9dist
 dev.off()
 

@@ -81,6 +81,9 @@ saveRDS(SER9blockX[[2]], file="/home/alreiner/Projects/ffcw/output/BlockProbeRes
 xchrfull <- readRDS("/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9SERfullblock_Xchr.rds")
 sum(xchrfull$P.Value < 2.4E-7)/nrow(xchrfull) #91.6% of probes differentially methylated by sex
 
+#Prettify version for paper
+xchrfull_paper <- xchrfull %>% mutate(logFCpct=logFC*100)%>% select(probe_id,logFC,logFCpct,AveExpr,t,P.Value)
+write.csv(xchrfull_paper,"/home/alreiner/Projects/ffcw/output/BlockProbeResults/age9SERfullblock_Xchr_manu.csv")
 #############################
 #EDA#
 #############################
